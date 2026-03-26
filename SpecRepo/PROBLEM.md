@@ -36,9 +36,13 @@ Secondary:
 - model registry writes and reads through `iceberg.silver.ml_model_registry`
 - model lifecycle governance for candidate, production, rollback, deprecation, and retirement state
 - inference APIs for repo-owned customer, campaign, and advertiser models
+- execution routing across both internally hosted inference services and externally hosted provider endpoints
+- deployment and reconciliation of internally hosted inference workloads, including API-driven creation of serving pods when required by promotion or experiment rollout
+- CockroachDB-backed authoritative serving state for internal inference deployments, reconciliation progress, and readiness-gated controls
 - Redis-backed online feature serving for the customer realtime path
 - serving-owned offline/online parity and reconciliation for that online feature path
 - broader online feature platform semantics for feature definitions, freshness, rebuild, and serving contracts
+- integration with shared prerequisite platform resources from `../example-data-pipeline-w-ml` where reuse is viable
 
 ### Out of Scope
 
@@ -62,6 +66,16 @@ This repo now owns:
 - offline/online feature parity checks owned by serving
 
 The upstream data repo remains an external dependency only. It publishes offline feature tables and upstream events, but those datasets and pipelines are not re-owned here.
+
+Shared prerequisite resources from `../example-data-pipeline-w-ml` may be reused and extended rather than duplicated, especially:
+
+- PostgreSQL
+- MinIO-compatible object storage
+- Kafka
+- Kafka Connect
+- Iceberg
+- Schema Registry
+- dbt
 
 ## Explicit Upstream Dependencies
 
@@ -92,6 +106,7 @@ The system is successful when:
 - repo-owned model training can materialize artifacts, publish them, and register them
 - repo-owned models can move through an explicit lifecycle rather than implicit latest-row selection only
 - inference can resolve the current repo-owned model version from the registry
+- internal inference targets can be deployed, become ready, and receive traffic under explicit control-plane and experiment-rollout rules
 - customer realtime scoring can merge offline context with Redis-backed hot features
 - campaign and advertiser scoring can execute from offline features
 - serving parity checks can detect mismatches between expected and actual Redis online records
@@ -104,3 +119,4 @@ The system is successful when:
 - hard-coded data-platform hostnames still exist in some absorbed runtime defaults
 - the current rollout mechanism for absorbed ML models is effectively latest-manifest selection by `trained_at`; no separate model-release state machine exists in code
 - the current absorbed training flow does not yet define a stable dataset-version contract separate from feature table names and timestamps
+- the intended normal promotion policy is candidate-first after successful validation, with explicit production promotion later; manual override promotion remains possible by exception when validation does not pass

@@ -43,8 +43,51 @@
 - Trigger: a routing decision selects an admitted target
 - The system must:
   - execute inference through the platform-controlled serving layer in V1
+  - dispatch execution traffic to either:
+    - an internally hosted inference service
+    - an external provider endpoint
+  - treat internal and external execution targets as distinct target classes under the same routing decision contract
   - preserve the authoritative `decision_id`
   - capture terminal outcome information needed for audit and chargeback
+
+### FR-4A: Reconcile Internal Inference Workloads
+
+- Actor: control-plane deployment reconciler
+- Trigger: a model version is promoted, an experiment rollout requires an internal serving target, or serving desired state changes
+- The system must:
+  - maintain explicit desired state for internally hosted inference workloads
+  - persist desired and observed internal inference deployment state in CockroachDB as the authoritative serving-state store
+  - reconcile that desired state into workload resources such as Kubernetes deployments, replica sets, services, or equivalent serving primitives
+  - bind each deployed internal inference workload to:
+    - target identifier
+    - model version
+    - artifact manifest URI
+    - execution class (`cpu` or `gpu`)
+    - replica policy
+    - environment or namespace
+  - record reconciliation progress and readiness state in CockroachDB before the workload becomes eligible for routing
+- Failure behavior:
+  - if the workload cannot be reconciled or does not become ready, the target must remain unroutable
+
+### FR-4B: Expose Internal Inference Deployment APIs
+
+- Actor: control-plane operator or automated promotion workflow
+- Trigger: a caller needs to create, update, inspect, or retire an internal inference workload
+- The system must expose:
+  - `POST /api/v1/inference-deployments`
+  - `PATCH /api/v1/inference-deployments/{deployment_id}`
+  - `GET /api/v1/inference-deployments/{deployment_id}`
+  - `POST /api/v1/inference-deployments/{deployment_id}:retire`
+- The create or update path may cause pods to be created, replaced, or scaled by the deployment reconciler.
+
+### FR-4C: Gate Routing On Internal Deployment Readiness
+
+- Actor: routing layer
+- Trigger: a routing policy references an internal inference target
+- The system must:
+  - consider an internal target admissible only when the corresponding deployment is in a ready state as recorded in CockroachDB
+  - reject or fall back according to routing policy when an internal deployment is missing, unhealthy, or not yet ready
+  - bind the selected target to the exact deployed model version intended by control-plane state
 
 ### FR-5: Publish Experiment and Routing Configuration
 
@@ -54,6 +97,15 @@
   - validate targeting and routing rules
   - persist a new immutable published version
   - make that version available to snapshot construction and routing
+
+### FR-5I: Support Experiment-Driven Internal Deployment Rollout
+
+- Actor: control-plane operator or rollout automation
+- Trigger: an experiment version or routing policy introduces an internal target that is not yet deployed at the required capacity or version
+- The system must:
+  - allow experiment and routing publication workflows to declare required internal deployment state
+  - reconcile or verify that required internal inference workloads exist before the target becomes eligible for assignment
+  - support rollout stages where an internal deployment exists but is not yet traffic-bearing until readiness and policy conditions are met
 
 ### FR-5E: Govern Experiment Lifecycle and Guardrails
 
@@ -249,6 +301,8 @@
 - The system must:
   - create `iceberg.silver.ml_model_registry` if missing
   - insert a row containing feature group, label, feature-definition version, timestamps, artifact URIs, local paths, training row counts, and summary metrics
+  - record the normal post-training status as `candidate` when required validation and test gates pass
+  - avoid implicitly promoting a newly registered version to `production`
 
 ### FR-10B: Govern Repo-Owned Model Lifecycle
 
@@ -266,6 +320,8 @@
   - preserve prior production references for rollback
   - prevent retired versions from being newly selected for routing or scoring
   - expose deprecation metadata and retirement reason
+  - treat passing validation as sufficient for candidate publication, not automatic production activation
+  - support an explicit exception-based promotion path when validation or tests do not pass, provided the override captures approver identity, reason, and risk acceptance metadata
 
 ### FR-10C: Expose Model Lifecycle APIs
 
@@ -276,6 +332,10 @@
   - `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:deprecate`
   - `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:retire`
   - `GET /api/v1/model-registry/{feature_group}/versions/{model_version}`
+- The promote endpoint must support:
+  - normal promotion from a validated candidate version
+  - an exception-based promotion mode that records override metadata when required validation or tests did not pass
+- Promotion of an internally hosted model version may trigger creation or update of an internal inference deployment before production routing activation succeeds.
 
 ### FR-10A: Expose Training Job APIs
 
@@ -285,7 +345,9 @@
   - `POST /api/v1/training-jobs`
   - `GET /api/v1/training-jobs/{training_job_id}`
 - The create endpoint must accept, at minimum, the requested feature group and any explicit table or artifact overrides supported by the training workflow.
-- The read endpoint must expose job status and any resulting artifact or registry references.
+- The read endpoint must expose job status, validation/test outcomes, and any resulting artifact or registry references.
+- When validation passes, the normal outcome is candidate publication only.
+- When validation fails, the job must not publish through the normal candidate-first path, but the resulting version may still be eligible for explicit exception-based promotion through the lifecycle API.
 
 ### FR-11: Resolve Active Repo-Owned Model For Inference
 
@@ -448,8 +510,26 @@
 ### Deployment Placement
 
 - if a dedicated GPU node pool is provisioned, only inference-serving workloads that execute model inference may tolerate GPU taints or select GPU nodes
-- control-plane API, routing API, snapshot builder, projection workers, feedback/replay services, training job orchestration, registry inspection APIs, online feature services, Redis, PostgreSQL, Kafka, and other supporting infrastructure must schedule onto the default non-GPU node pool
+- control-plane API, routing API, snapshot builder, projection workers, feedback/replay services, training job orchestration, registry inspection APIs, online feature services, Redis, PostgreSQL, CockroachDB, Kafka, and other supporting infrastructure must schedule onto the default non-GPU node pool
 - the existence of a GPU node pool must not broaden placement for general compute workloads in this repo
+
+### Shared Resource Reuse
+
+- when prerequisite resources already exist in `../example-data-pipeline-w-ml`, the default deployment model is to extend those resources rather than stand up duplicates
+- this applies especially to:
+  - PostgreSQL
+  - MinIO-compatible object storage
+  - Kafka
+  - Kafka Connect
+  - Iceberg
+  - Schema Registry
+  - dbt
+- CockroachDB is the explicit exception to generic relational-store reuse: it is the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls
+- new dedicated instances should be introduced only when there is a clear requirement for isolation, incompatible lifecycle, capacity separation, or security boundary separation
+- reused shared resources must still provide:
+  - explicit namespace, schema, bucket, topic, connector, catalog, and job naming for this repo's assets
+  - auditable ownership of objects created by this repo
+  - compatibility with the existing upstream platform's operational model
 
 ### Runtime Model For Absorbed ML Workflow
 
@@ -458,6 +538,7 @@
 - training can run in a container via `config/ml-training/Dockerfile` and `train-models.sh`
 - object storage is MinIO-compatible and addressed through S3 APIs
 - registry I/O is performed through Trino
+- CockroachDB stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated serving controls
 - Redis is required for the customer hot-feature path
 
 ### Tests

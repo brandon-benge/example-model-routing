@@ -23,6 +23,13 @@
 21. Online feature definitions must declare authoritative entity key, version identity, freshness/TTL expectations, and parity obligations before they are treated as serving contracts.
 22. Online feature rebuild or recovery paths must not silently redefine feature values for the same feature version without an explicit version change or documented reconciliation action.
 23. If a dedicated GPU node pool exists, only inference-serving pods that execute model inference may schedule onto it; control-plane APIs, routing APIs, workers, storage, and supporting services must run on default non-GPU nodes.
+24. The normal model-release path is: validation passes, artifacts and registry state are published as a candidate version, and production activation requires an explicit promotion step.
+25. Validation failure must block the normal candidate-first release flow, but the governed system must still support an explicit exception-based promotion path with auditable override metadata.
+26. When suitable shared platform resources already exist in `../example-data-pipeline-w-ml`, this repo must prefer extending or namespacing those resources over creating duplicate platform services.
+27. Reuse of shared PostgreSQL, MinIO, Kafka, Kafka Connect, Iceberg, Schema Registry, and dbt resources must preserve ownership boundaries, tenant isolation, and naming clarity; reuse does not transfer ownership of the upstream platform into this repo.
+28. A model version must not receive routed traffic through an internal inference target until the corresponding serving workload has been reconciled, is ready, and is bound to the intended model version and target identity.
+29. API-driven promotion or experiment rollout may create or update internal inference pods, but those actions must mutate explicit desired state rather than issuing ad hoc unmanaged pod creation.
+30. CockroachDB is the authoritative store for desired and observed state of internal inference deployments, including reconciliation progress and readiness-gated serving controls; routing eligibility for internal targets must derive from that authoritative state.
 
 ## Known Gaps That Must Be Preserved As Gaps
 

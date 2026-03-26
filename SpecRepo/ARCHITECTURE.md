@@ -15,6 +15,8 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - feedback and replay contracts that connect routed decisions to downstream audit, chargeback, labels, and experiment analysis inputs
 - model lifecycle governance for repo-owned trained versions
 - broader online feature platform semantics beyond a single Redis hash path
+- a reuse-first integration stance for prerequisite shared platform resources from `../example-data-pipeline-w-ml`
+- CockroachDB as the authoritative serving-state store for internal inference deployment reconciliation and readiness-gated controls
 
 ## Components
 
@@ -52,8 +54,17 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 
 - Responsibility:
   - execute V1 inference through the platform-controlled path and emit execution outcomes
+  - route execution traffic to either internally hosted inference services or external provider endpoints based on the selected target
 - Deployment rule:
   - this is the only first-party service class in this repo permitted to target a dedicated GPU node pool when one exists
+
+### Component: Internal Inference Deployment Reconciler
+
+- Responsibility:
+  - persist and read authoritative desired and observed serving state in CockroachDB
+  - translate desired internal inference deployment state into actual serving workloads
+  - create, update, scale, and retire pods or equivalent serving resources for internal targets
+  - publish readiness and health state consumed by routing and promotion workflows
 
 ### Component: Projection Workers
 
@@ -101,6 +112,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - query offline context
   - merge Redis customer hot features where applicable
   - optionally persist score outputs to Redis
+  - act as an internal inference target class that may be selected by the execution gateway
 - Canonical endpoints:
   - `GET /health`
   - `GET /models/latest`
@@ -133,6 +145,9 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:deprecate`
   - `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:retire`
   - `GET /api/v1/model-registry/{feature_group}/versions/{model_version}`
+- Governance rule:
+  - normal flow promotes validated candidates only
+  - exception flow permits explicit override promotion with auditable approval metadata when validation did not pass
 
 ### Component: Hot Feature Aggregator
 
@@ -178,7 +193,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 2. Routing API resolves experiment assignment and the current regional snapshot.
 3. Routing API applies authorization, budget, and target eligibility checks.
 4. Routing API persists the authoritative decision record.
-5. Platform Proxy executes the selected target path.
+5. Platform Proxy executes the selected target path, dispatching either to an internal inference service or to an external provider.
 6. Projection workers derive execution, audit, and chargeback representations.
 
 ### Added Flow: Training and Model Registration
@@ -188,6 +203,14 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 3. Training writes dataset, model, metrics, and manifest artifacts locally.
 4. Training optionally uploads those artifacts to MinIO-compatible storage.
 5. Training optionally inserts a registry row into `iceberg.silver.ml_model_registry`.
+
+### Added Flow: Internal Inference Deployment
+
+1. A promotion or experiment/routing change declares required internal serving state.
+2. The deployment reconciler creates or updates the internal inference workload.
+3. Pods may be created or replaced to satisfy the requested model version and execution class.
+4. Readiness is reported back into control-plane state.
+5. Routing may only send traffic once the deployment is ready.
 
 ### Added Flow: Repo-Owned Model Inference
 
@@ -234,6 +257,25 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - Trino and Iceberg infrastructure
 - object storage infrastructure
 - Redis infrastructure
+
+### Shared Resource Reuse Policy
+
+- default posture:
+  - extend shared prerequisite resources from `../example-data-pipeline-w-ml` instead of duplicating them
+- candidate shared resources:
+  - PostgreSQL
+  - MinIO-compatible object storage
+  - Kafka
+  - Kafka Connect
+  - Iceberg
+  - Schema Registry
+  - dbt
+- explicit exception:
+  - CockroachDB remains the authoritative store for internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls even when shared PostgreSQL is reused for other metadata
+- required safeguards:
+  - separate schemas, buckets, topics, connector names, Iceberg namespaces, and dbt models for this repo's assets
+  - no ownership ambiguity over upstream platform-managed assets
+  - no accidental coupling that prevents independent evolution of this repo's APIs and specs
 
 ## Open Architectural Questions
 

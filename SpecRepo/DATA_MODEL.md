@@ -152,6 +152,43 @@
 - Purpose: versioned registration of a model/provider endpoint or model artifact target routable by the platform
 - Source: control plane
 - Mutability: mutable registration with immutable version references
+- Schema notes:
+  - `target_class`: enum `internal_inference_service` | `external_provider`
+  - internal targets must reference deployable model artifacts and desired serving characteristics
+  - external targets must reference provider connection metadata rather than internal workload state
+
+### Entity: `InternalInferenceDeployment`
+
+- Purpose: explicit desired and observed state for one internally hosted inference-serving workload
+- Source: control-plane deployment reconciler
+- Authoritative store: CockroachDB
+- Mutability: desired state mutable, observed state updated by reconciliation
+- Primary key:
+  - `deployment_id`
+- Natural key:
+  - `target_id + model_version + environment`
+- Schema:
+  - `deployment_id`: string
+  - `target_id`: string
+  - `feature_group`: string
+  - `model_version`: string
+  - `manifest_uri`: string
+  - `execution_class`: enum `cpu` | `gpu`
+  - `namespace`: string
+  - `service_name`: string
+  - `desired_replicas`: integer
+  - `min_replicas`: integer
+  - `max_replicas`: integer | null
+  - `state`: enum `pending` | `deploying` | `ready` | `degraded` | `retiring` | `retired` | `failed`
+  - `ready_replicas`: integer
+  - `created_by`: string
+  - `created_at`: timestamp
+  - `updated_at`: timestamp
+  - `metadata`: object
+- Validation rules:
+  - internal deployments must reference a valid `target_id` and `manifest_uri`
+  - `execution_class=gpu` is permitted only for inference-serving workloads
+  - a deployment may not be considered ready unless `ready_replicas >= 1`
 
 ### Entity: `Snapshot`
 
@@ -547,6 +584,7 @@
 - `AuthoritativeDecisionRecord -> ExperimentVersion`: many-to-one
 - `AuthoritativeDecisionRecord -> RoutingPolicyVersion`: many-to-one
 - `AuthoritativeDecisionRecord -> Snapshot`: many-to-one
+- `AuthoritativeDecisionRecord -> InternalInferenceDeployment`: optional many-to-one when the selected target is internal
 - `AuthoritativeDecisionRecord -> ChargebackRecord`: one-to-one derived
 - `AuthoritativeDecisionRecord -> AuditRecord`: one-to-one derived
 - `AuthoritativeDecisionRecord -> ExecutionOutcomeRecord`: one-to-one derived
@@ -555,6 +593,7 @@
 - `ReplayRecord -> AuthoritativeDecisionRecord`: optional many-to-one when replay originates from a prior decision
 - `ModelRegistryRow -> ModelManifest`: manifest URI points to the canonical artifact manifest for the trained version
 - `ModelRegistryRow -> ModelLifecycleRecord`: one-to-many immutable lifecycle transitions
+- `ModelTarget -> InternalInferenceDeployment`: one-to-many for internal target classes
 - `CustomerOnlineFeatureRecord -> customer_id`: one current hot-feature record per versioned Redis key
 - `OnlineFeatureParityResult -> CustomerOnlineFeatureRecord`: many-to-one by feature identity and entity key
 - `OnlineFeatureParityResult -> OnlineFeatureDefinition`: many-to-one

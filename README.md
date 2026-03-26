@@ -6,6 +6,7 @@ A Docker-first, open source reference project for multi-tenant model routing and
 - deterministic request-time routing against explicit regional snapshots
 - immutable routing-time decision records for replay and audit
 - asynchronous execution outcome, audit, and chargeback projections
+- model artifacts stored in object storage and referenced by metadata stores rather than embedded in the relational database
 - a V1 platform-proxy execution path with a planned future smart-client primary path
 
 The governed system specification lives in [`SpecRepo/README.md`](SpecRepo/README.md).
@@ -30,21 +31,27 @@ flowchart LR
     subgraph DataPlane
         RA[Routing API]
         EG[Execution Gateway]
+        IIS[Internal Inference Services]
         PW[Projection Workers]
     end
 
     subgraph Storage
         PG[(PostgreSQL)]
+        CRDB[(CockroachDB)]
+        OBJ[(Object Storage)]
         REDIS[(Redis)]
         KAFKA[(Kafka)]
     end
 
-    subgraph Providers
-        MP[Model Providers]
+    subgraph Targets
+        IIS2[Internal Inference Services]
+        MP[External Model Providers]
     end
 
     OP --> CPA
     CPA --> PG
+    CPA --> CRDB
+    CPA --> OBJ
     CPA --> KAFKA
     KAFKA --> SB
     SB --> PG
@@ -54,8 +61,10 @@ flowchart LR
     SC --> RA
     RA --> REDIS
     RA --> PG
+    RA --> CRDB
     RA --> EG
     RA --> KAFKA
+    EG --> IIS
     EG --> MP
     EG --> KAFKA
     KAFKA --> PW
@@ -71,6 +80,7 @@ sequenceDiagram
     actor Operator
     participant API as Control Plane API
     participant DB as PostgreSQL
+    participant Obj as Object Storage
     participant Bus as Kafka
     participant Snap as Snapshot Builder
     participant Cache as Redis
@@ -79,11 +89,33 @@ sequenceDiagram
     API->>DB: Save model target registration
     Operator->>API: Publish configuration
     API->>DB: Persist immutable published version
+    API->>Obj: Write model manifests and artifact references
     API->>Bus: Emit publish event
     Bus->>Snap: Deliver snapshot build trigger
     Snap->>DB: Read published versions
     Snap->>Cache: Write region + snapshot_version
     Snap-->>Operator: New snapshot is available through API
+```
+
+### 1A. Promotion Or Experiment Rollout Creates Internal Inference Pods
+
+```mermaid
+sequenceDiagram
+    actor Operator
+    participant API as Control Plane API
+    participant DB as CockroachDB
+    participant Obj as Object Storage
+    participant Reconciler as Inference Deployment Reconciler
+    participant Internal as Internal Inference Service
+
+    Operator->>API: Promote model or publish experiment/routing change
+    API->>DB: Persist desired internal deployment state
+    API->>Obj: Resolve manifest URI and artifact references
+    API->>Reconciler: Reconcile internal inference deployment
+    Reconciler->>Internal: Create/update serving pods
+    Internal-->>Reconciler: Ready / not ready
+    Reconciler-->>API: Deployment status
+    API-->>Operator: Target ready state available through API
 ```
 
 ### 2. Inference Request Through Platform Proxy in V1
@@ -94,17 +126,25 @@ sequenceDiagram
     participant Route as Routing API
     participant Cache as Redis
     participant DB as PostgreSQL
+    participant Obj as Object Storage
     participant Exec as Execution Gateway
-    participant Provider as Model Provider
+    participant Internal as Internal Inference Service
+    participant Provider as External Model Provider
     participant Bus as Kafka
     participant Proj as Projection Workers
 
     App->>Route: Inference request + tenant_id + idempotency key
     Route->>Cache: Read regional snapshot
     Route->>DB: Check idempotency and persist AuthoritativeDecisionRecord
-    Route->>Exec: Execute selected target
-    Exec->>Provider: Forward inference request
-    Provider-->>Exec: Response or terminal error
+    Route->>Obj: Resolve model manifest and artifact reference when needed
+    Route->>Exec: Execute selected target path
+    alt Internal model serving target
+        Exec->>Internal: Forward inference request
+        Internal-->>Exec: Response or terminal error
+    else External provider target
+        Exec->>Provider: Forward inference request
+        Provider-->>Exec: Response or terminal error
+    end
     Exec->>Bus: Emit ExecutionOutcomeRecord event
     Route-->>App: Response + decision_id
     Bus->>Proj: Deliver outcome / decision events
@@ -119,6 +159,7 @@ sequenceDiagram
     participant Route as Routing API
     participant Cache as Redis
     participant DB as PostgreSQL
+    participant Obj as Object Storage
     participant Provider as Model Provider
     participant Bus as Kafka
     participant Proj as Projection Workers
@@ -126,6 +167,7 @@ sequenceDiagram
     Client->>Route: Route request + tenant_id + auth context
     Route->>Cache: Read regional snapshot
     Route->>DB: Persist AuthoritativeDecisionRecord
+    Route->>Obj: Resolve selected model manifest and artifact reference
     Route->>DB: Persist or embed EndpointAccessDecision
     Route-->>Client: Endpoint handle + decision_id + token metadata
     Client->>Provider: Direct provider call using approved access metadata
@@ -142,12 +184,68 @@ The intended local runtime is Docker Compose. The baseline stack is:
 - `control-plane-api`: FastAPI
 - `routing-api`: FastAPI
 - `execution-gateway`: FastAPI
+- `inference-deployment-reconciler`: controller that creates or updates internal inference-serving workloads
 - `snapshot-worker`: Python worker
 - `projection-worker`: Python worker
 - `postgres`: durable metadata and decision store
+- `cockroachdb`: authoritative store for internal inference deployment state, reconciliation progress, and readiness-gated serving controls
+- `object-storage`: MinIO-compatible artifact store for model binaries, manifests, datasets, and metrics
 - `redis`: regional snapshot cache
 - `kafka`: event bus and projection fanout
 - `keycloak`: optional local identity provider for end-to-end auth flows
+
+## Shared Resource Reuse
+
+The default posture is reuse-first. When prerequisite platform resources already exist in `../example-data-pipeline-w-ml`, this repo should add to those resources instead of creating duplicate platform services.
+
+Reuse-first targets:
+
+- PostgreSQL
+- MinIO-compatible object storage
+- Kafka
+- Kafka Connect
+- Iceberg
+- Schema Registry
+- dbt
+
+Explicit exception:
+
+- CockroachDB remains the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation, and readiness gating even when PostgreSQL is reused for broader metadata
+
+This means:
+
+- new schemas instead of new Postgres clusters where viable
+- new buckets or prefixes instead of new object stores where viable
+- new topics and connectors instead of new Kafka clusters where viable
+- new Iceberg namespaces and tables instead of new catalogs where viable
+- new dbt projects, packages, models, or selectors instead of a second analytics foundation where viable
+
+New dedicated resources should only be introduced when isolation, security, lifecycle, or capacity requirements justify them.
+
+## Storage Model
+
+Storage responsibilities are split deliberately:
+
+- PostgreSQL stores relational metadata, configuration, decisions, and derived records outside the internal serving-state authority boundary
+- CockroachDB stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls
+- object storage stores model binaries, manifests, datasets, and evaluation artifacts
+- Redis stores hot routing and feature-serving state
+- Kafka carries asynchronous events
+
+Model artifacts are not treated as primary relational database payloads.
+
+## Execution Model
+
+Execution is split into selection and target dispatch:
+
+- `Routing API` decides which target should handle the request
+- `Execution Gateway` dispatches execution traffic either to:
+  - internally hosted inference services for models served by this platform
+  - external model providers for provider-hosted models
+
+The execution gateway is therefore not provider-only. It is the execution router across internal and external inference targets.
+
+Internal inference services may be created or updated by API-driven control-plane actions through a deployment reconciler. In other words, promotion or experiment rollout can result in serving pods being created before traffic is admitted.
 
 ## Canonical Submission Endpoint
 
@@ -286,7 +384,8 @@ Required namespaces:
 - `platform-system`: ingress controller and shared cluster support components for this stack
 - `model-routing-control-plane`: control-plane API
 - `model-routing-data-plane`: routing API, execution gateway, snapshot worker, and projection worker
-- `model-routing-data`: PostgreSQL, Redis, Kafka, and Keycloak when self-managed in-cluster
+- `model-routing-data`: PostgreSQL, object storage, Redis, Kafka, and Keycloak when self-managed in-cluster; reuse existing shared services where viable instead of duplicating them
+- `model-routing-serving-state`: CockroachDB for authoritative internal inference deployment state and readiness-gated controls when not consumed as an existing shared service
 
 Baseline container ports:
 
@@ -294,6 +393,8 @@ Baseline container ports:
 - `routing-api`: `8004`
 - `execution-gateway`: `8005`
 - `postgres`: `5432`
+- `cockroachdb`: `26257`
+- `object-storage`: `9000`
 - `redis`: `6379`
 - `kafka`: `9092`
 - `keycloak`: `8083`
@@ -301,7 +402,7 @@ Baseline container ports:
 Exposure model:
 
 - `control-plane-api` and `routing-api` are exposed through Kubernetes ingress on HTTPS `443`
-- `execution-gateway`, workers, databases, cache, Kafka, and Keycloak remain internal by default
+- `execution-gateway`, workers, databases, object storage, cache, Kafka, and Keycloak remain internal by default
 
 Node placement:
 
@@ -383,6 +484,8 @@ Open source defaults for the initial build:
 
 - Backend APIs and workers: Python, FastAPI, Pydantic
 - Database: PostgreSQL
+- Serving-state database: CockroachDB
+- Object storage: MinIO-compatible S3 API
 - Cache: Redis
 - Messaging: Kafka
 - Identity: Keycloak

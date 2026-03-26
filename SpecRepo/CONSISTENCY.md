@@ -9,6 +9,13 @@
 - Failure tolerance:
   - fail closed if authentication, authorization, budget validation, or valid snapshot resolution cannot be proven
 
+### Workflow: Internal Inference Deployment Reconciliation
+
+- Required guarantee:
+  - internal serving desired state and observed deployment state are durably persisted in CockroachDB and reconciled into explicit workload state before routing treats the target as ready
+- Failure tolerance:
+  - deployment reconciliation failure leaves the target unroutable or fallback-only according to policy
+
 ### Workflow: Configuration Publish
 
 - Required guarantee:
@@ -59,6 +66,7 @@
   - lifecycle transitions for repo-owned models are append-only, explicit, and auditable
 - Failure tolerance:
   - promotion, deprecation, or retirement must fail closed if the target version identity or required metadata cannot be proven
+  - validation failure blocks the normal candidate-first path but does not remove the availability of an explicit override promotion workflow when the caller supplies required approval metadata
 
 ### Workflow: Customer Hot Feature Serving
 
@@ -80,6 +88,7 @@
 ## Read Semantics
 
 - strong reads are required for authoritative decision lookup, published version lookup, and decision replay
+- strong reads are required from CockroachDB for internal inference deployment readiness, reconciliation status, and desired-state lookup used in routing eligibility
 - stale-tolerant reads are allowed for regional snapshot caches, derived projections, and Redis hot features
 - repo-owned model inference reads are manifest-driven and strong relative to the manifest URI returned by the registry query
 
@@ -88,6 +97,7 @@
 - routing records are ordered by immutable version identifiers and `decision_id`
 - published configurations are monotonically versioned
 - experiment exposures are ordered by exposure timestamp and bind to immutable experiment version identifiers
+- internal deployment readiness must be established before the corresponding target is treated as eligible for routing
 - training rows are ordered chronologically before splitting
 - active-model selection for absorbed ML models is ordered only by `trained_at DESC`
 - customer hot-feature windows are ordered by retained event timestamps in keyed state
@@ -99,6 +109,7 @@
 - concurrent training runs for the same feature group are allowed by current code and may create multiple registry rows; latest `trained_at` wins for current-model lookup
 - concurrent replay requests are allowed and must remain distinct by replay identifier
 - concurrent lifecycle transitions must resolve by explicit append-only state transitions rather than in-place overwrites
+- concurrent deployment updates for the same internal target must converge on one latest desired state for that target and model version
 
 ## Explicit Non-Guarantees
 
