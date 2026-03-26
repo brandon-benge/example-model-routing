@@ -7,11 +7,13 @@
 - Actor: inference routing layer
 - Trigger: an admitted inference request includes request identity and experiment or routing policy context
 - The system must:
-  - resolve the active published experiment version for the applicable routing configuration
-  - deterministically assign the request to a treatment according to configured rules
-  - return `variant_key` or `not_eligible` plus evaluation metadata sufficient for audit and replay
+  - resolve the applicable GrowthBook experiment reference and rule binding for the routing configuration
+  - evaluate assignment through the server-side GrowthBook SDK only
+  - deterministically assign the request to a treatment according to configured rules using user-level stickiness
+  - guarantee that the same `user_id + experiment_id` resolves to the same variant within the same effective GrowthBook bucket version and sticky-bucket state
+  - return `variant_id` or `not_eligible` plus evaluation metadata sufficient for audit and replay
 - Failure behavior:
-  - if the experiment is unknown, inactive, or not applicable, return deterministic `not_eligible`
+  - if the experiment is unknown, not running, or not applicable, return deterministic `not_eligible`
 
 ### FR-2: Persist Authoritative Decision Record
 
@@ -48,6 +50,9 @@
     - an external provider endpoint
   - treat internal and external execution targets as distinct target classes under the same routing decision contract
   - preserve the authoritative `decision_id`
+  - capture producer identity sufficient to map the terminal outcome back to the exact model that executed the request:
+    - for internal execution, the exact `model_version` and `manifest_uri`
+    - for external execution, the exact provider and provider model identifier observed or resolved at execution time
   - capture terminal outcome information needed for audit and chargeback
 
 ### FR-4A: Reconcile Internal Inference Workloads
@@ -89,63 +94,70 @@
   - reject or fall back according to routing policy when an internal deployment is missing, unhealthy, or not yet ready
   - bind the selected target to the exact deployed model version intended by control-plane state
 
-### FR-5: Publish Experiment and Routing Configuration
+### FR-5: Publish Routing Configuration With GrowthBook Bindings
 
 - Actor: control-plane operator via API
-- Trigger: a draft routing policy or experiment configuration is promoted
+- Trigger: a routing policy is published for traffic while referencing GrowthBook-managed experiment state
 - The system must:
-  - validate targeting and routing rules
-  - persist a new immutable published version
-  - make that version available to snapshot construction and routing
+  - validate routing rules and referenced GrowthBook experiment bindings
+  - persist immutable routing-policy publication state in this repo
+  - persist immutable references to the effective GrowthBook experiment and rule identities used by that publication
+  - make those references available to snapshot construction and routing
 
 ### FR-5I: Support Experiment-Driven Internal Deployment Rollout
 
 - Actor: control-plane operator or rollout automation
-- Trigger: an experiment version or routing policy introduces an internal target that is not yet deployed at the required capacity or version
+- Trigger: a referenced GrowthBook experiment state or routing policy introduces an internal target that is not yet deployed at the required capacity or version
 - The system must:
-  - allow experiment and routing publication workflows to declare required internal deployment state
+  - allow routing publication workflows that reference GrowthBook experiments to declare required internal deployment state
   - reconcile or verify that required internal inference workloads exist before the target becomes eligible for assignment
   - support rollout stages where an internal deployment exists but is not yet traffic-bearing until readiness and policy conditions are met
 
 ### FR-5E: Govern Experiment Lifecycle and Guardrails
 
-- Actor: control-plane operator or automated experiment-governance workflow
-- Trigger: an experiment is created, activated, paused, completed, or archived
+- Actor: GrowthBook operator, GrowthBook automation, or experiment-governance workflow
+- Trigger: an experiment is created, started, paused, completed, or killed
 - The system must:
-  - support explicit experiment states:
+  - support explicit experiment states as managed in GrowthBook:
     - `draft`
-    - `validated`
-    - `active`
+    - `running`
     - `paused`
     - `completed`
-    - `archived`
-  - require every published experiment version to define:
-    - assignment key
-    - variant allocation
-    - eligibility rules
-    - success metrics
-    - guardrail metrics
-    - owner
-    - start criteria
-    - stop criteria
-  - prevent a version from becoming `active` unless targeting, allocation, and metric definitions are valid
-  - allow `paused` state to stop new exposure assignment without mutating prior version contents
+  - treat GrowthBook as the system of record for assignment key, allocation, eligibility rules, metrics, and analysis settings
+  - express targeting and segmentation through GrowthBook-compatible rules over user attributes, geography, device type, and eligibility filters
+  - define all experiment metrics as SQL over warehouse tables queryable through Iceberg/Trino
+  - configure experiment evaluation through the GrowthBook statistical engine, including CUPED variance reduction, Bayesian inference, and sequential testing where applicable
+  - prevent this repo from publishing a routing policy that references a GrowthBook experiment whose targeting, allocation, metric definitions, or analysis settings are invalid
+  - allow `paused` state to stop new exposure assignment without this repo rewriting a duplicate immutable experiment payload
+  - support an API-driven kill switch that immediately stops new assignment for a running GrowthBook experiment
+
+### FR-5E1: Support Dynamic Traffic Allocation
+
+- Actor: GrowthBook operator or GrowthBook-backed experiment governance workflow
+- Trigger: a running experiment requires a traffic-allocation change
+- The system must:
+  - allow allocation percentages to change through GrowthBook without replacing prior exposure records
+  - preserve deterministic assignment consistency for already-sticky users within the same effective bucket version
+  - record GrowthBook allocation changes as auditable control-plane actions in this repo
 
 ### FR-5F: Emit Experiment Exposure Records
 
 - Actor: inference routing layer
-- Trigger: a request is evaluated against an active experiment
+- Trigger: a request is evaluated against a running experiment
 - The system must:
   - emit at most one immutable exposure record per admitted request per evaluated experiment
   - bind the exposure record to:
     - `decision_id`
-    - experiment identifier
-    - experiment version
-    - variant key or `not_eligible`
+    - GrowthBook experiment identifier
+    - GrowthBook rule, phase, or bucket-version identity when available
+    - `variant_id` or `not_eligible`
+    - `user_id`
     - assignment key
+    - `model_version`
     - tenant identifier
     - exposure timestamp
   - emit exposure data even when the evaluated result is `not_eligible` if the system needs that outcome for experiment accounting
+  - treat exposure logging as mandatory for every assignment outcome produced by GrowthBook evaluation
 
 ### FR-5G: Provide Experiment Analytics Inputs
 
@@ -154,34 +166,29 @@
 - The system must:
   - make exposure, decision, execution outcome, audit, chargeback, and label data joinable by stable identifiers
   - define the minimum experiment-analysis input contract to include:
-    - experiment version
-    - variant key
+    - GrowthBook experiment identifier
+    - GrowthBook rule, phase, or bucket-version identity when available
+    - variant identifier
+    - user identifier
     - assignment key
+    - model version
     - decision timestamp
     - selected target identifier
     - execution outcome
     - billable usage and cost where available
     - downstream label or outcome join key where available
   - record missing analysis inputs explicitly rather than silently omitting exposed traffic from experiment accounting
+  - source experiment metric definitions from warehouse SQL over Iceberg/Trino-backed tables
+  - execute experiment analysis using the GrowthBook statistical engine
 
 ### FR-5A: Expose API-Managed Control-Plane Administration
 
 - Actor: control-plane operator
 - Trigger: an operator needs to manage routes, models, experiments, or published state
 - The system must:
-  - expose API endpoints for model registration, promotion, experiment creation and publication, route creation and update, routing-policy publication, decision inspection, projection inspection, and snapshot inspection
+  - expose API endpoints for model registration, promotion, route creation and update, routing-policy publication, decision inspection, projection inspection, and snapshot inspection
   - support operator workflows without requiring a first-party browser UI
   - keep operator actions auditable and version-bound under the same control-plane rules as other managed changes
-
-### FR-5B: Expose Experiment Management APIs
-
-- Actor: control-plane operator
-- Trigger: an operator needs to create, modify, publish, or inspect an experiment
-- The system must expose:
-  - `POST /api/v1/experiments`
-  - `PATCH /api/v1/experiments/{experiment_id}`
-  - `POST /api/v1/experiments/{experiment_id}:publish`
-  - `GET /api/v1/experiments/{experiment_id}`
 
 ### FR-5C: Expose Route Management APIs
 
@@ -515,7 +522,7 @@
 
 ### Shared Resource Reuse
 
-- when prerequisite resources already exist in `../example-data-pipeline-w-ml`, the default deployment model is to extend those resources rather than stand up duplicates
+- the required deployment model is Kubernetes in DigitalOcean using the existing prerequisite resources already provisioned for `../example-data-pipeline-w-ml` rather than standing up duplicates
 - this applies especially to:
   - PostgreSQL
   - MinIO-compatible object storage
@@ -525,7 +532,7 @@
   - Schema Registry
   - dbt
 - CockroachDB is the explicit exception to generic relational-store reuse: it is the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls
-- new dedicated instances should be introduced only when there is a clear requirement for isolation, incompatible lifecycle, capacity separation, or security boundary separation
+- new dedicated instances should be introduced only when there is a clear requirement for isolation, incompatible lifecycle, capacity separation, or security boundary separation that makes reuse impossible
 - reused shared resources must still provide:
   - explicit namespace, schema, bucket, topic, connector, catalog, and job naming for this repo's assets
   - auditable ownership of objects created by this repo
@@ -536,6 +543,7 @@
 - the current implementation is Python 3.11 oriented
 - training and inference use repository-local code rather than heavyweight external ML frameworks
 - training can run in a container via `config/ml-training/Dockerfile` and `train-models.sh`
+- all workloads are expected to run as Kubernetes workloads in DigitalOcean
 - object storage is MinIO-compatible and addressed through S3 APIs
 - registry I/O is performed through Trino
 - CockroachDB stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated serving controls

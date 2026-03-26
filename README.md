@@ -1,8 +1,8 @@
 # Example Model Routing
 
-A Docker-first, open source reference project for multi-tenant model routing and policy control. The system provides:
+An open source reference project for multi-tenant model routing and policy control, designed to run on Kubernetes in DigitalOcean. The system provides:
 
-- API-managed control-plane workflows for model registration, routing policy, and experiment publication
+- API-managed control-plane workflows for model registration and routing policy publication, with GrowthBook-managed experiments
 - deterministic request-time routing against explicit regional snapshots
 - immutable routing-time decision records for replay and audit
 - asynchronous execution outcome, audit, and chargeback projections
@@ -11,7 +11,7 @@ A Docker-first, open source reference project for multi-tenant model routing and
 
 The governed system specification lives in [`SpecRepo/README.md`](SpecRepo/README.md).
 
-The intended production-style deployment target is Kubernetes on DigitalOcean. Local development remains Docker Compose-first.
+The required deployment target is Kubernetes in DigitalOcean.
 
 ## Architecture Overview
 
@@ -25,13 +25,13 @@ flowchart LR
 
     subgraph ControlPlane
         CPA[Control Plane API]
+        GB[GrowthBook]
         SB[Snapshot Builder]
     end
 
     subgraph DataPlane
         RA[Routing API]
         EG[Execution Gateway]
-        IIS[Internal Inference Services]
         PW[Projection Workers]
     end
 
@@ -53,6 +53,8 @@ flowchart LR
     CPA --> CRDB
     CPA --> OBJ
     CPA --> KAFKA
+    CPA --> GB
+    GB --> SB
     KAFKA --> SB
     SB --> PG
     SB --> REDIS
@@ -62,9 +64,10 @@ flowchart LR
     RA --> REDIS
     RA --> PG
     RA --> CRDB
+    RA --> GB
     RA --> EG
     RA --> KAFKA
-    EG --> IIS
+    EG --> IIS2
     EG --> MP
     EG --> KAFKA
     KAFKA --> PW
@@ -80,19 +83,20 @@ sequenceDiagram
     actor Operator
     participant API as Control Plane API
     participant DB as PostgreSQL
-    participant Obj as Object Storage
+    participant GB as GrowthBook
     participant Bus as Kafka
     participant Snap as Snapshot Builder
     participant Cache as Redis
 
     Operator->>API: POST /api/v1/model-targets
     API->>DB: Save model target registration
-    Operator->>API: Publish configuration
-    API->>DB: Persist immutable published version
-    API->>Obj: Write model manifests and artifact references
+    Operator->>GB: Create or update experiment/feature rules
+    Operator->>API: POST /api/v1/routing-policies/{policy_id}:publish
+    API->>GB: Read referenced experiment/rule identities
+    API->>DB: Persist immutable routing-policy version + captured GrowthBook references
     API->>Bus: Emit publish event
     Bus->>Snap: Deliver snapshot build trigger
-    Snap->>DB: Read published versions
+    Snap->>DB: Read published routing policy + captured GrowthBook references
     Snap->>Cache: Write region + snapshot_version
     Snap-->>Operator: New snapshot is available through API
 ```
@@ -108,7 +112,7 @@ sequenceDiagram
     participant Reconciler as Inference Deployment Reconciler
     participant Internal as Internal Inference Service
 
-    Operator->>API: Promote model or publish experiment/routing change
+    Operator->>API: Promote model or publish routing change referencing GrowthBook state
     API->>DB: Persist desired internal deployment state
     API->>Obj: Resolve manifest URI and artifact references
     API->>Reconciler: Reconcile internal inference deployment
@@ -126,7 +130,7 @@ sequenceDiagram
     participant Route as Routing API
     participant Cache as Redis
     participant DB as PostgreSQL
-    participant Obj as Object Storage
+    participant GB as GrowthBook
     participant Exec as Execution Gateway
     participant Internal as Internal Inference Service
     participant Provider as External Model Provider
@@ -135,8 +139,9 @@ sequenceDiagram
 
     App->>Route: Inference request + tenant_id + idempotency key
     Route->>Cache: Read regional snapshot
+    Route->>GB: Evaluate assignment via server-side SDK
     Route->>DB: Check idempotency and persist AuthoritativeDecisionRecord
-    Route->>Obj: Resolve model manifest and artifact reference when needed
+    Route->>DB: Persist ExperimentExposureRecord
     Route->>Exec: Execute selected target path
     alt Internal model serving target
         Exec->>Internal: Forward inference request
@@ -159,15 +164,16 @@ sequenceDiagram
     participant Route as Routing API
     participant Cache as Redis
     participant DB as PostgreSQL
-    participant Obj as Object Storage
+    participant GB as GrowthBook
     participant Provider as Model Provider
     participant Bus as Kafka
     participant Proj as Projection Workers
 
     Client->>Route: Route request + tenant_id + auth context
     Route->>Cache: Read regional snapshot
+    Route->>GB: Evaluate assignment via server-side SDK
     Route->>DB: Persist AuthoritativeDecisionRecord
-    Route->>Obj: Resolve selected model manifest and artifact reference
+    Route->>DB: Persist ExperimentExposureRecord
     Route->>DB: Persist or embed EndpointAccessDecision
     Route-->>Client: Endpoint handle + decision_id + token metadata
     Client->>Provider: Direct provider call using approved access metadata
@@ -177,9 +183,9 @@ sequenceDiagram
     Proj->>DB: Persist outcome, audit, and chargeback records
 ```
 
-## Local Development Baseline
+## Kubernetes Baseline
 
-The intended local runtime is Docker Compose. The baseline stack is:
+The required runtime is Kubernetes in DigitalOcean. The baseline stack is:
 
 - `control-plane-api`: FastAPI
 - `routing-api`: FastAPI
@@ -187,18 +193,18 @@ The intended local runtime is Docker Compose. The baseline stack is:
 - `inference-deployment-reconciler`: controller that creates or updates internal inference-serving workloads
 - `snapshot-worker`: Python worker
 - `projection-worker`: Python worker
-- `postgres`: durable metadata and decision store
+- `postgres`: reused existing PostgreSQL service for durable metadata and decision store
 - `cockroachdb`: authoritative store for internal inference deployment state, reconciliation progress, and readiness-gated serving controls
-- `object-storage`: MinIO-compatible artifact store for model binaries, manifests, datasets, and metrics
+- `object-storage`: reused existing MinIO-compatible artifact store for model binaries, manifests, datasets, and metrics
 - `redis`: regional snapshot cache
-- `kafka`: event bus and projection fanout
+- `kafka`: reused existing Kafka service for event bus and projection fanout
 - `keycloak`: optional local identity provider for end-to-end auth flows
 
 ## Shared Resource Reuse
 
-The default posture is reuse-first. When prerequisite platform resources already exist in `../example-data-pipeline-w-ml`, this repo should add to those resources instead of creating duplicate platform services.
+The deployment model is mandatory reuse of prerequisite platform resources that already exist in DigitalOcean for `../example-data-pipeline-w-ml`. This repo must add to those resources instead of creating duplicate platform services.
 
-Reuse-first targets:
+Required shared resources:
 
 - PostgreSQL
 - MinIO-compatible object storage
@@ -210,17 +216,17 @@ Reuse-first targets:
 
 Explicit exception:
 
-- CockroachDB remains the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation, and readiness gating even when PostgreSQL is reused for broader metadata
+- CockroachDB remains the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation, and readiness gating even though existing PostgreSQL is reused for broader metadata
 
 This means:
 
-- new schemas instead of new Postgres clusters where viable
-- new buckets or prefixes instead of new object stores where viable
-- new topics and connectors instead of new Kafka clusters where viable
-- new Iceberg namespaces and tables instead of new catalogs where viable
-- new dbt projects, packages, models, or selectors instead of a second analytics foundation where viable
+- new schemas instead of new Postgres clusters
+- new buckets or prefixes instead of new object stores
+- new topics and connectors instead of new Kafka clusters
+- new Iceberg namespaces and tables instead of new catalogs
+- new dbt projects, packages, models, or selectors instead of a second analytics foundation
 
-New dedicated resources should only be introduced when isolation, security, lifecycle, or capacity requirements justify them.
+New dedicated resources should only be introduced when isolation, security, lifecycle, or capacity requirements make reuse impossible.
 
 ## Storage Model
 
@@ -312,16 +318,11 @@ Current snapshot lookup uses:
 
 This endpoint returns the current snapshot version and staleness metadata for the requested region.
 
-## Canonical Experiment Endpoints
+## Canonical Experiment Management
 
-Experiment management is API-driven:
+Experiment management is handled in GrowthBook, not through this repo's API surface.
 
-- `POST /api/v1/experiments`
-- `PATCH /api/v1/experiments/{experiment_id}`
-- `POST /api/v1/experiments/{experiment_id}:publish`
-- `GET /api/v1/experiments/{experiment_id}`
-
-These endpoints create, update, publish, and inspect experiment configuration used by routing.
+This repo consumes referenced GrowthBook experiment, feature, rule, phase, and bucket-version identities during routing-policy publication and routing-time evaluation.
 
 ## Canonical Route Mapping Endpoints
 
@@ -377,14 +378,14 @@ This endpoint returns the expected online record, the actual Redis record, and f
 
 ## Deployment Baseline
 
-The intended non-local deployment target is DigitalOcean Kubernetes.
+The required deployment target is DigitalOcean Kubernetes.
 
 Required namespaces:
 
 - `platform-system`: ingress controller and shared cluster support components for this stack
 - `model-routing-control-plane`: control-plane API
 - `model-routing-data-plane`: routing API, execution gateway, snapshot worker, and projection worker
-- `model-routing-data`: PostgreSQL, object storage, Redis, Kafka, and Keycloak when self-managed in-cluster; reuse existing shared services where viable instead of duplicating them
+- `model-routing-data`: Redis and Keycloak when self-managed in-cluster; reused PostgreSQL, object storage, and Kafka services are consumed from the existing platform footprint instead of duplicated here
 - `model-routing-serving-state`: CockroachDB for authoritative internal inference deployment state and readiness-gated controls when not consumed as an existing shared service
 
 Baseline container ports:
@@ -425,7 +426,6 @@ Image policy:
 .
 ├── README.md
 ├── AGENTS.md
-├── docker-compose.yml
 ├── SpecRepo/
 │   ├── README.md
 │   ├── PROBLEM.md
@@ -469,8 +469,8 @@ Operator management workflows are API-only. The control-plane API should support
 
 - create and register model targets through `POST /api/v1/model-targets`
 - assign one or more models to an inference route through `POST/PATCH /api/v1/routes...`
-- configure experiment and routing rules through `POST/PATCH /api/v1/experiments...` and route APIs
-- publish immutable versions through `POST /api/v1/experiments/{experiment_id}:publish` and `POST /api/v1/routing-policies/{policy_id}:publish`
+- configure experiments in GrowthBook and route bindings through route and routing-policy APIs
+- publish immutable routing-policy versions through `POST /api/v1/routing-policies/{policy_id}:publish`
 - inspect routing decisions by `GET /api/v1/decisions/{decision_id}`
 - inspect snapshot version and staleness by `GET /api/v1/snapshots/{region}/current`
 - inspect projection status by `GET /api/v1/decisions/{decision_id}/projections`
@@ -483,14 +483,13 @@ Operator management workflows are API-only. The control-plane API should support
 Open source defaults for the initial build:
 
 - Backend APIs and workers: Python, FastAPI, Pydantic
-- Database: PostgreSQL
+- Database: reused PostgreSQL
 - Serving-state database: CockroachDB
-- Object storage: MinIO-compatible S3 API
+- Object storage: reused MinIO-compatible S3 API
 - Cache: Redis
-- Messaging: Kafka
+- Messaging: reused Kafka
 - Identity: Keycloak
-- Local orchestration: Docker Compose
-- Non-local deployment target: DigitalOcean Kubernetes
+- Deployment target: DigitalOcean Kubernetes
 
 ## Notes
 

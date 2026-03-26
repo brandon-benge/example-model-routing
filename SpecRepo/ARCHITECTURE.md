@@ -15,22 +15,20 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - feedback and replay contracts that connect routed decisions to downstream audit, chargeback, labels, and experiment analysis inputs
 - model lifecycle governance for repo-owned trained versions
 - broader online feature platform semantics beyond a single Redis hash path
-- a reuse-first integration stance for prerequisite shared platform resources from `../example-data-pipeline-w-ml`
+- a required integration stance that reuses prerequisite shared platform resources from `../example-data-pipeline-w-ml`
 - CockroachDB as the authoritative serving-state store for internal inference deployment reconciliation and readiness-gated controls
+- GrowthBook as the experimentation control plane, using server-side SDK evaluation and warehouse-SQL metrics
 
 ## Components
 
 ### Component: Control Plane API
 
 - Responsibility:
-  - CRUD and publish workflows for experiments, routing policy, endpoint policy, model catalog metadata, and operator audit
+  - CRUD and publish workflows for routing policy, endpoint policy, GrowthBook experiment references, model catalog metadata, and operator audit
   - API-only management for operator workflows; no first-party browser UI is assumed
 - Canonical operator-facing endpoints:
   - `POST /api/v1/model-targets`
   - `POST /api/v1/model-targets/{model_target_id}:promote`
-  - `POST /api/v1/experiments`
-  - `PATCH /api/v1/experiments/{experiment_id}`
-  - `POST /api/v1/experiments/{experiment_id}:publish`
   - `POST /api/v1/routes`
   - `PATCH /api/v1/routes/{route_id}`
   - `POST /api/v1/routing-policies/{policy_id}:publish`
@@ -40,15 +38,26 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - `POST /api/v1/replays`
   - `GET /api/v1/replays/{replay_id}`
 
+### Component: GrowthBook Experimentation Control Plane
+
+- Responsibility:
+  - store experiment definitions, targeting rules, allocation settings, and analysis configuration for governed experiments
+  - provide deterministic server-side SDK evaluation with user-level stickiness
+  - support dynamic traffic allocation, lifecycle state changes, and kill-switch behavior without this repo storing a duplicate experiment-definition payload
+  - evaluate backend and ML experiments covering model routing, prompt variants, and feature-pipeline variants
+  - serve as the only experiment-management interface; this repo does not expose a parallel experiment CRUD or lifecycle API
+
 ### Component: Snapshot Builder and Distributor
 
 - Responsibility:
   - assemble and distribute immutable regional snapshots used by routing
+  - embed captured GrowthBook experiment references and rule bindings alongside routing-policy state
 
 ### Component: Routing API
 
 - Responsibility:
-  - authenticate requests, evaluate experiment assignment, resolve snapshots, enforce admission controls, persist authoritative decisions, and route requests
+  - authenticate requests, evaluate GrowthBook experiment assignment through the server-side SDK, resolve snapshots, enforce admission controls, persist authoritative decisions, and route requests
+  - use GrowthBook experiment identifiers and captured rule bindings from snapshots rather than a duplicated local experiment-definition object
 
 ### Component: Platform Proxy / Execution Gateway
 
@@ -69,7 +78,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 ### Component: Projection Workers
 
 - Responsibility:
-  - derive execution, audit, and chargeback records keyed by `decision_id`
+  - derive exposure, execution, audit, and chargeback records keyed by `decision_id`
 
 ### Component: Feedback Contract and Replay Layer
 
@@ -182,17 +191,18 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 
 - Responsibility:
   - consume experiment exposure, outcome, cost, and label inputs
-  - evaluate success metrics and guardrails
-  - support pause, completion, and archival decisions without mutating immutable experiment versions
+  - resolve metric SQL over Iceberg/Trino-backed warehouse tables
+  - execute GrowthBook statistical evaluation including CUPED, Bayesian inference, and sequential testing
+  - support pause, completion, and kill-switch decisions without this repo mutating a duplicate experiment-definition payload
 
 ## Main Flows
 
 ### Primary Flow: Routed Inference
 
 1. Caller sends an authenticated inference request.
-2. Routing API resolves experiment assignment and the current regional snapshot.
+2. Routing API evaluates GrowthBook assignment through the server-side SDK using sticky `user_id` bucketing and resolves the current regional snapshot.
 3. Routing API applies authorization, budget, and target eligibility checks.
-4. Routing API persists the authoritative decision record.
+4. Routing API persists the authoritative decision record and mandatory exposure record.
 5. Platform Proxy executes the selected target path, dispatching either to an internal inference service or to an external provider.
 6. Projection workers derive execution, audit, and chargeback representations.
 
@@ -233,7 +243,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 1. A routed request emits an authoritative decision and experiment exposure data.
 2. Execution produces terminal outcome information.
 3. Audit, chargeback, and downstream label inputs remain joinable to that decision.
-4. A replay request can evaluate the same request identity against historical or current version sets.
+4. A replay request can evaluate the same request identity against historical or current version sets, including the same captured GrowthBook experiment reference and sticky assignment inputs.
 5. Replay results preserve divergence from the original outcome when applicable.
 
 ## Ownership Boundaries
@@ -260,8 +270,8 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 
 ### Shared Resource Reuse Policy
 
-- default posture:
-  - extend shared prerequisite resources from `../example-data-pipeline-w-ml` instead of duplicating them
+- required posture:
+  - run on Kubernetes in DigitalOcean and extend shared prerequisite resources from `../example-data-pipeline-w-ml` instead of duplicating them
 - candidate shared resources:
   - PostgreSQL
   - MinIO-compatible object storage

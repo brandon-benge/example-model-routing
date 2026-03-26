@@ -27,8 +27,11 @@
   - `snapshot_version`: string
   - `region`: string
   - `experiment_context`: list[object]
-    - `experiment_id`: string
-    - `experiment_version`: integer
+    - `experiment_ref_id`: string | null
+    - `growthbook_experiment_id`: string
+    - `growthbook_rule_id`: string | null
+    - `bucket_version`: integer | null
+    - `variant_id`: string | null
     - `variant_key`: string
   - `selected_target_id`: string | null
   - `admissible_target_ids`: list[string]
@@ -43,59 +46,31 @@
   - `policy_version`, `snapshot_version`, and `region` are required for every persisted decision
   - `selected_target_id` must be null only when `decision_state=rejected`
 
-### Entity: `ExperimentVersion`
+### Entity: `ExperimentReference`
 
-- Purpose: immutable published experiment configuration used during routing
-- Source: control plane publish workflow
-- Mutability: immutable
+- Purpose: immutable local reference to the effective GrowthBook experiment identity used during routing and audit
+- Source: control plane publish workflow and GrowthBook synchronization
+- Mutability: immutable per captured reference
 - Primary key:
-  - `experiment_id + experiment_version`
+  - `experiment_ref_id`
+- Natural key:
+  - `growthbook_experiment_id + growthbook_rule_id + captured_at`
 - Schema:
-  - `experiment_id`: string
-  - `experiment_version`: integer
-  - `experiment_name`: string
-  - `owner`: string
-  - `tenant_scope`: string or `global`
-  - `route_scope`: list[string]
-  - `status`: enum
-    - `draft`
-    - `validated`
-    - `active`
-    - `paused`
-    - `completed`
-    - `archived`
-  - `assignment_key`: string
-  - `assignment_unit`: enum
-    - `tenant`
-    - `user`
-    - `session`
-    - `request`
-    - `entity`
-  - `eligibility_rules`: object
-  - `variants`: list[object]
-    - `variant_key`: string
-    - `allocation_percent`: number
-    - `target_overrides`: list[string]
-    - `is_control`: boolean
-  - `success_metrics`: list[object]
-    - `metric_name`: string
-    - `direction`: enum `increase` | `decrease`
-    - `aggregation`: enum `mean` | `rate` | `sum` | `p95` | `p99`
-  - `guardrail_metrics`: list[object]
-    - `metric_name`: string
-    - `direction`: enum `increase` | `decrease`
-    - `threshold_type`: enum `absolute` | `relative`
-    - `threshold_value`: number
-  - `start_criteria`: object
-  - `stop_criteria`: object
-  - `published_at`: timestamp
-  - `published_by`: string
-  - `description`: string
+  - `experiment_ref_id`: string
+  - `growthbook_experiment_id`: string
+  - `growthbook_feature_id`: string | null
+  - `growthbook_rule_id`: string | null
+  - `growthbook_phase`: string | null
+  - `bucket_version`: integer | null
+  - `assignment_source`: enum `growthbook_server_sdk`
+  - `captured_at`: timestamp
+  - `captured_by`: string
+  - `config_digest`: string
+  - `metadata`: object
 - Validation rules:
-  - `experiment_version` must increase monotonically within `experiment_id`
-  - variant allocation must sum to `100`
-  - exactly zero or one variant may set `is_control=true`
-  - `assignment_key`, `variants`, `success_metrics`, and `guardrail_metrics` are required before `active`
+  - `assignment_source` must be `growthbook_server_sdk`
+  - `growthbook_experiment_id` is required
+  - local records must not duplicate the authoritative experiment-definition payload owned by GrowthBook
 
 ### Entity: `RoutingPolicyVersion`
 
@@ -119,8 +94,11 @@
     - `eligibility_predicates`: object
     - `capacity_reference`: string | null
   - `experiment_bindings`: list[object]
-    - `experiment_id`: string
-    - `experiment_version`: integer
+    - `experiment_ref_id`: string
+    - `growthbook_experiment_id`: string
+    - `growthbook_rule_id`: string | null
+    - `bucket_version`: integer | null
+    - `variant_ids`: list[string] | null
     - `variant_target_map`: object
   - `default_target_order`: list[string]
   - `fallback_order`: list[string]
@@ -144,7 +122,7 @@
 - Validation rules:
   - `policy_version` must increase monotonically within `policy_id`
   - every `target_id` in `fallback_order` must exist in `target_set`
-  - every bound experiment version must exist and be valid for the route scope
+  - every bound GrowthBook experiment reference must exist and be valid for the route scope
   - `default_target_order` and `fallback_order` must not reference disabled or unknown targets at publish time
 
 ### Entity: `ModelTarget`
@@ -223,6 +201,8 @@
   - `normalized_output_ref`: string | null
   - `subject_key`: string | null
   - `experiment_context`: list[object]
+    - `variant_id`: string
+    - `variant_key`: string
   - `execution_terminal_state`: string
   - `decision_timestamp`: timestamp
   - `completion_timestamp`: timestamp | null
@@ -269,13 +249,19 @@
 - Primary key:
   - `exposure_id`
 - Natural key:
-  - `decision_id + experiment_id + experiment_version`
+  - `decision_id + growthbook_experiment_id + growthbook_rule_id`
 - Schema:
   - `exposure_id`: string
   - `decision_id`: string
   - `tenant_id`: string
-  - `experiment_id`: string
-  - `experiment_version`: integer
+  - `experiment_ref_id`: string | null
+  - `growthbook_experiment_id`: string
+  - `growthbook_feature_id`: string | null
+  - `growthbook_rule_id`: string | null
+  - `growthbook_phase`: string | null
+  - `bucket_version`: integer | null
+  - `user_id`: string
+  - `variant_id`: string | null
   - `variant_key`: string
   - `assignment_key`: string
   - `assignment_unit`: string
@@ -286,10 +272,14 @@
   - `snapshot_version`: string
   - `region`: string
   - `target_id`: string | null
+  - `model_version`: string | null
   - `exposed_at`: timestamp
   - `metadata`: object
 - Validation rules:
-  - there may be at most one exposure record for a given `decision_id + experiment_id + experiment_version`
+  - there may be at most one exposure record for a given `decision_id + growthbook_experiment_id + growthbook_rule_id`
+  - `user_id` is required for every exposure record
+  - `variant_id` is required when `exposure_state=assigned`
+  - `variant_id` must be null when `exposure_state=not_eligible`
   - `variant_key` may be `not_eligible` only when `exposure_state=not_eligible`
   - `policy_version`, `snapshot_version`, and `region` must match the authoritative routing context
 
@@ -304,6 +294,9 @@
   - `decision_id`: string
   - `tenant_id`: string
   - `selected_target_id`: string | null
+  - `execution_target_class`: enum `internal_inference_service` | `external_provider` | null
+  - `model_version`: string | null
+  - `manifest_uri`: string | null
   - `provider_request_id`: string | null
   - `provider_id`: string | null
   - `provider_model_id`: string | null
@@ -318,6 +311,9 @@
   - `metadata`: object
 - Validation rules:
   - one execution outcome record may exist per `decision_id`
+  - `execution_target_class` is required when `selected_target_id` is not null
+  - `execution_target_class=internal_inference_service` requires `model_version` and `manifest_uri`
+  - `execution_target_class=external_provider` requires `provider_id` and `provider_model_id`
   - `terminal_state=success` requires `completed_at`
   - `error_code` is required for non-success states except `cancelled` when cancellation is self-describing in metadata
 
@@ -369,10 +365,13 @@
   - `region`: string | null
   - `input_policy_id`: string | null
   - `input_policy_version`: integer | null
-  - `input_experiment_versions`: list[object]
-    - `experiment_id`: string
-    - `experiment_version`: integer
+  - `input_experiment_refs`: list[object]
+    - `experiment_ref_id`: string | null
+    - `growthbook_experiment_id`: string
+    - `growthbook_rule_id`: string | null
+    - `bucket_version`: integer | null
   - `result_assignment`: object
+    - `variant_id`: string | null
     - `variant_key`: string
     - `experiment_bindings`: list[object]
   - `result_routing`: object

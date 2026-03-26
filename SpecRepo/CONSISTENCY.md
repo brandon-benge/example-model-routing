@@ -19,19 +19,40 @@
 ### Workflow: Configuration Publish
 
 - Required guarantee:
-  - published policy and experiment versions are immutable, monotonically versioned, and durably persisted before routing uses them
+  - published routing-policy versions are immutable, monotonically versioned, and durably persisted before routing uses them
+  - routing publication must capture immutable references to the effective GrowthBook experiment and rule identities used at publish time
 
 ### Workflow: Experiment Exposure and Analytics Input
 
 - Required guarantee:
-  - exposure records bind to the exact experiment version and decision identifiers used at assignment time
+  - GrowthBook server-side assignment is deterministic for the same `user_id + experiment_id` within the same effective bucket version
+  - exposure records bind to the exact GrowthBook experiment and rule identities and decision identifiers used at assignment time
+  - user-level stickiness is preserved across repeated evaluations for the same effective bucket version
 - Failure tolerance:
   - if an exposure record cannot be persisted, the failure must be explicit for reconciliation; exposed traffic must not silently disappear from analysis inputs
+
+### Workflow: Experiment Analysis
+
+- Required guarantee:
+  - governed experiment metrics are evaluated from warehouse SQL over Iceberg/Trino-backed data
+  - the GrowthBook statistical engine is the analysis engine of record
+  - configured analyses support CUPED variance reduction, Bayesian inference, and sequential testing
+- Failure tolerance:
+  - if metric SQL or GrowthBook analysis execution fails, experiment evaluation must surface explicit failed-analysis state rather than stale or partial results masquerading as complete
+
+### Workflow: Execution Outcome Capture
+
+- Required guarantee:
+  - each execution outcome binds to the exact producer identity used for that execution
+  - internal executions record the exact model version and manifest URI that served the request
+  - external executions record the exact provider/model identity observed or resolved at execution time
+- Failure tolerance:
+  - if exact producer identity cannot be proven, the outcome must be recorded as an explicit platform failure rather than persisted as an ambiguous success record
 
 ### Workflow: Replay
 
 - Required guarantee:
-  - replay against historical mode uses the exact bound versions recorded on the original decision when available
+  - replay against historical mode uses the exact bound routing-policy version and captured GrowthBook experiment references recorded on the original decision when available
   - replay against current mode records the current version set used for evaluation
 - Failure tolerance:
   - replay failure must be explicit and must preserve the replay request record
@@ -87,7 +108,7 @@
 
 ## Read Semantics
 
-- strong reads are required for authoritative decision lookup, published version lookup, and decision replay
+- strong reads are required for authoritative decision lookup, published routing-policy lookup, captured GrowthBook experiment reference lookup, and decision replay
 - strong reads are required from CockroachDB for internal inference deployment readiness, reconciliation status, and desired-state lookup used in routing eligibility
 - stale-tolerant reads are allowed for regional snapshot caches, derived projections, and Redis hot features
 - repo-owned model inference reads are manifest-driven and strong relative to the manifest URI returned by the registry query
@@ -96,7 +117,8 @@
 
 - routing records are ordered by immutable version identifiers and `decision_id`
 - published configurations are monotonically versioned
-- experiment exposures are ordered by exposure timestamp and bind to immutable experiment version identifiers
+- experiment exposures are ordered by exposure timestamp and bind to immutable GrowthBook experiment reference identifiers
+- sticky user assignment for a given effective bucket version is stable under repeated evaluation
 - internal deployment readiness must be established before the corresponding target is treated as eligible for routing
 - training rows are ordered chronologically before splitting
 - active-model selection for absorbed ML models is ordered only by `trained_at DESC`
@@ -105,7 +127,8 @@
 ## Concurrency
 
 - duplicate admissions collapse via the authoritative decision record rules
-- concurrent publishes produce distinct immutable versions rather than in-place overwrite
+- concurrent routing publishes produce distinct immutable versions rather than in-place overwrite
+- concurrent traffic-allocation changes for the same running experiment must preserve deterministic assignment for already-sticky users within that effective bucket version
 - concurrent training runs for the same feature group are allowed by current code and may create multiple registry rows; latest `trained_at` wins for current-model lookup
 - concurrent replay requests are allowed and must remain distinct by replay identifier
 - concurrent lifecycle transitions must resolve by explicit append-only state transitions rather than in-place overwrites

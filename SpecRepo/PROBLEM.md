@@ -26,10 +26,11 @@ Secondary:
 - routing and policy control plane for inference requests
 - request-time model selection based on policy, availability, latency, cost, and experiment state
 - budget and authorization enforcement
-- versioned routing policy and experiment publication
+- versioned routing policy publication and immutable capture of referenced GrowthBook experiment bindings
 - immutable routing, audit, and chargeback records
 - feedback and data contracts for decisions, outcomes, exposures, labels, and replay
 - experiment analytics, governance, and guardrail evaluation for routing-controlled experiments
+- GrowthBook as the experimentation control plane for assignment, targeting, exposure tracking, and evaluation
 - API-managed operator workflows for control-plane administration
 - ML-owned model training for the current baseline classifiers
 - model artifact publication to MinIO-compatible object storage
@@ -77,6 +78,8 @@ Shared prerequisite resources from `../example-data-pipeline-w-ml` may be reused
 - Schema Registry
 - dbt
 
+This reuse is mandatory for deployment in DigitalOcean Kubernetes. This repo must consume the existing PostgreSQL, MinIO, Kafka, and Iceberg platform services rather than introducing duplicate services here.
+
 ## Explicit Upstream Dependencies
 
 The absorbed training workflow depends on:
@@ -101,12 +104,14 @@ The system is successful when:
 - routing decisions remain deterministic, version-bound, and auditable
 - admitted requests remain attributable and budget-safe
 - decision, exposure, outcome, audit, chargeback, and label data remain joinable under explicit contracts
-- experiment governance can distinguish draft, active, paused, completed, and archived states with guardrail-aware analysis inputs
+- experiment governance can distinguish draft, running, paused, and completed states with guardrail-aware analysis inputs
+- GrowthBook-driven experiments use deterministic server-side assignment with user-level stickiness and warehouse-SQL metric definitions
 - routing policy can be reasoned about as an explicit schema rather than ad hoc operator intent
 - repo-owned model training can materialize artifacts, publish them, and register them
 - repo-owned models can move through an explicit lifecycle rather than implicit latest-row selection only
 - inference can resolve the current repo-owned model version from the registry
 - internal inference targets can be deployed, become ready, and receive traffic under explicit control-plane and experiment-rollout rules
+- experiment evaluation uses GrowthBook-compatible statistics over Iceberg/Trino-backed metrics, including CUPED, Bayesian inference, and sequential testing
 - customer realtime scoring can merge offline context with Redis-backed hot features
 - campaign and advertiser scoring can execute from offline features
 - serving parity checks can detect mismatches between expected and actual Redis online records
