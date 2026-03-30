@@ -1,6 +1,6 @@
 # Example Model Routing
 
-An open source reference project for multi-tenant model routing and policy control, designed to run on Kubernetes in DigitalOcean. The system provides:
+An open source reference project for a lean, multi-tenant AI platform designed to run on Kubernetes in DigitalOcean. The system provides:
 
 - API-managed control-plane workflows for model registration and routing policy publication, with GrowthBook-managed experiments
 - deterministic request-time routing against explicit regional snapshots
@@ -8,10 +8,12 @@ An open source reference project for multi-tenant model routing and policy contr
 - asynchronous execution outcome, audit, and chargeback projections
 - model artifacts stored in object storage and referenced by metadata stores rather than embedded in the relational database
 - a V1 platform-proxy execution path with a planned future smart-client primary path
+- DigitalOcean GPU-backed internal inference deployment and readiness-gated rollout
+- prompt, agent, and MCP capability lifecycle governance under the same API-managed platform contract
 
 The governed system specification lives in [`SpecRepo/README.md`](SpecRepo/README.md).
 
-The required deployment target is Kubernetes in DigitalOcean.
+The required deployment target is Kubernetes in DigitalOcean. The architecture is intentionally portable enough that optional cloud adapters may be added later, but DigitalOcean remains the authoritative baseline environment.
 
 ## Architecture Overview
 
@@ -198,7 +200,8 @@ The required runtime is Kubernetes in DigitalOcean. The baseline stack is:
 - `object-storage`: reused existing MinIO-compatible artifact store for model binaries, manifests, datasets, and metrics
 - `redis`: regional snapshot cache
 - `kafka`: reused existing Kafka service for event bus and projection fanout
-- `keycloak`: optional local identity provider for end-to-end auth flows
+- Kubernetes-native secrets, config maps, and service accounts for initial application configuration and secret delivery
+- application-native health and structured logging for the initial operational baseline
 
 ## Shared Resource Reuse
 
@@ -228,6 +231,17 @@ This means:
 
 New dedicated resources should only be introduced when isolation, security, lifecycle, or capacity requirements make reuse impossible.
 
+## Platform Positioning
+
+This repository now represents a lean AI platform baseline rather than only a routing control plane. In addition to routing and repo-owned model workflows, the governed scope includes:
+
+- DigitalOcean GPU-backed internal inference rollout
+- prompt and agent version lifecycle
+- MCP server and tool-binding governance
+- tenant-aware usage and cost attribution
+
+The initial build intentionally does not require Keycloak, External Secrets, service mesh, OpenTelemetry, Prometheus, Loki, or Tempo/Jaeger. Those may be layered on later without changing the core API and data contracts.
+
 ## Storage Model
 
 Storage responsibilities are split deliberately:
@@ -252,6 +266,8 @@ Execution is split into selection and target dispatch:
 The execution gateway is therefore not provider-only. It is the execution router across internal and external inference targets.
 
 Internal inference services may be created or updated by API-driven control-plane actions through a deployment reconciler. In other words, promotion or experiment rollout can result in serving pods being created before traffic is admitted.
+
+When GPU-backed inference is required, serving workloads must target the configured DigitalOcean GPU node pool, while control-plane services, workers, and stateful dependencies remain on non-GPU nodes.
 
 ## Canonical Submission Endpoint
 
@@ -279,6 +295,15 @@ Versioning rule:
 
 - `model_version` is assigned by the control plane, not by the caller
 - it must be a monotonically increasing number per `model_name`
+
+## Additional Governed APIs
+
+The control plane also governs:
+
+- prompt lifecycle through `POST /api/v1/prompts`
+- agent lifecycle through `POST /api/v1/agents`
+- MCP capability registration and inspection through control-plane APIs
+- internal inference deployment state through `/api/v1/inference-deployments...`
 
 ## Canonical Promotion Endpoint
 
@@ -488,7 +513,9 @@ Open source defaults for the initial build:
 - Object storage: reused MinIO-compatible S3 API
 - Cache: Redis
 - Messaging: reused Kafka
-- Identity: Keycloak
+- Identity and auth baseline: Kubernetes-native and application-native mechanisms
+- Secrets baseline: Kubernetes-native secret delivery
+- Operational baseline: application health endpoints and structured logs
 - Deployment target: DigitalOcean Kubernetes
 
 ## Notes

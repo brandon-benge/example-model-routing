@@ -2,7 +2,7 @@
 
 ## Overview
 
-The governed system remains a centralized model routing and policy control plane with control-plane/data-plane separation, immutable versioned configuration, and deterministic routing against explicit snapshots.
+The governed system remains a centralized, DigitalOcean-hosted AI platform with control-plane/data-plane separation, immutable versioned configuration, and deterministic routing against explicit snapshots.
 
 The absorbed ML workflow is an additional subsystem inside that architecture, not a replacement for it. It adds:
 
@@ -18,17 +18,23 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - a required integration stance that reuses prerequisite shared platform resources from `../example-data-pipeline-w-ml`
 - CockroachDB as the authoritative serving-state store for internal inference deployment reconciliation and readiness-gated controls
 - GrowthBook as the experimentation control plane, using server-side SDK evaluation and warehouse-SQL metrics
+- DigitalOcean GPU node-pool-aware serving controls for internal inference workloads
+- prompt and agent lifecycle governance under the same API-managed rollout discipline as models
+- MCP server registration and tenant-scoped tool binding for governed agent execution
+- a lean operational posture that relies on Kubernetes-native and application-native auth, configuration, and runtime visibility in the initial build rather than heavyweight platform dependencies
 
 ## Components
 
 ### Component: Control Plane API
 
 - Responsibility:
-  - CRUD and publish workflows for routing policy, endpoint policy, GrowthBook experiment references, model catalog metadata, and operator audit
+  - CRUD and publish workflows for routing policy, endpoint policy, GrowthBook experiment references, model catalog metadata, prompt and agent lifecycle, MCP server bindings, and operator audit
   - API-only management for operator workflows; no first-party browser UI is assumed
 - Canonical operator-facing endpoints:
   - `POST /api/v1/model-targets`
   - `POST /api/v1/model-targets/{model_target_id}:promote`
+  - `POST /api/v1/prompts`
+  - `POST /api/v1/agents`
   - `POST /api/v1/routes`
   - `PATCH /api/v1/routes/{route_id}`
   - `POST /api/v1/routing-policies/{policy_id}:publish`
@@ -64,6 +70,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - Responsibility:
   - execute V1 inference through the platform-controlled path and emit execution outcomes
   - route execution traffic to either internally hosted inference services or external provider endpoints based on the selected target
+  - invoke approved MCP-backed tool or data capabilities for governed agent execution paths when those capabilities are referenced by the selected prompt or agent version
 - Deployment rule:
   - this is the only first-party service class in this repo permitted to target a dedicated GPU node pool when one exists
 
@@ -74,6 +81,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - translate desired internal inference deployment state into actual serving workloads
   - create, update, scale, and retire pods or equivalent serving resources for internal targets
   - publish readiness and health state consumed by routing and promotion workflows
+  - enforce DigitalOcean node-pool placement, quota, and execution-class rules for GPU-backed serving workloads
 
 ### Component: Projection Workers
 
@@ -93,6 +101,19 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - `ml/train.py`
 - Responsibility:
   - read upstream feature rows, split chronologically, train the current logistic-regression baselines, write artifacts, and optionally publish/register them
+
+### Component: Prompt And Agent Lifecycle API Surface
+
+- Responsibility:
+  - expose API-driven creation, inspection, promotion, canarying, pausing, rollback, and retirement of prompt and agent versions
+  - bind prompt and agent versions to routing policies and experiment definitions through explicit version references
+
+### Component: MCP Registry And Binding Layer
+
+- Responsibility:
+  - register MCP servers and their tenant-scoped capability schemas
+  - expose API-driven enable, disable, inspect, and retire workflows for MCP bindings
+  - provide the execution gateway with approved capability metadata for governed tool invocation
 
 ### Component: Artifact Store Adapter
 
@@ -195,6 +216,12 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - execute GrowthBook statistical evaluation including CUPED, Bayesian inference, and sequential testing
   - support pause, completion, and kill-switch decisions without this repo mutating a duplicate experiment-definition payload
 
+### Component: Usage Metering And Cost Allocation Layer
+
+- Responsibility:
+  - derive tenant-scoped usage and cost attribution for training, internal inference, external provider execution, and GPU-backed serving
+  - preserve joins to decisions, deployments, prompts, agents, and training jobs
+
 ## Main Flows
 
 ### Primary Flow: Routed Inference
@@ -217,10 +244,19 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 ### Added Flow: Internal Inference Deployment
 
 1. A promotion or experiment/routing change declares required internal serving state.
-2. The deployment reconciler creates or updates the internal inference workload.
-3. Pods may be created or replaced to satisfy the requested model version and execution class.
-4. Readiness is reported back into control-plane state.
-5. Routing may only send traffic once the deployment is ready.
+2. The deployment reconciler checks quota, execution class, and DigitalOcean node-pool placement policy.
+3. The deployment reconciler creates or updates the internal inference workload.
+4. Pods may be created or replaced to satisfy the requested model version and execution class.
+5. Readiness is reported back into control-plane state.
+6. Routing may only send traffic once the deployment is ready.
+
+### Added Flow: Prompt, Agent, And MCP Rollout
+
+1. An operator or automation registers a new prompt version, agent definition, or MCP binding.
+2. The control plane records immutable versioned state and auditable approval metadata.
+3. Routing policy or experiment configuration references the exact version identifiers to activate, canary, or shadow.
+4. Governed execution paths may invoke only active MCP capabilities approved for the requesting tenant.
+5. Rollback or retirement updates desired state without mutating prior version history.
 
 ### Added Flow: Repo-Owned Model Inference
 
@@ -255,8 +291,11 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - model registry writes and reads
 - inference APIs
 - experimentation and rollout logic
+- prompt and agent lifecycle governance
+- MCP server and tool-binding governance
 - Redis-backed online feature serving
 - serving-owned parity and reconciliation checks
+- DigitalOcean GPU-serving placement and readiness control for internal inference targets
 
 ### External Dependencies
 

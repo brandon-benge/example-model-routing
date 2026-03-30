@@ -2,7 +2,7 @@
 
 ## One-Sentence Mission
 
-We are building a centralized routing and policy control plane that deterministically selects and serves models for inference requests across tenants, and we now also own the training, model-registry, inference, and hot-feature-serving workflow for repo-owned models used by that platform.
+We are building a DigitalOcean-hosted, multi-tenant AI platform that deterministically routes and serves models across tenants, and we now also own the training, model-registry, internal inference deployment, hot-feature-serving, prompt and agent rollout, and MCP integration workflow required to operate that platform.
 
 ## Users / Actors
 
@@ -11,6 +11,7 @@ Primary:
 - internal product teams consuming routed inference
 - enterprise customers receiving routed model behavior
 - ML/platform engineers training and promoting repo-owned models
+- agent and application engineers shipping prompt, tool, and agent workflows
 
 Secondary:
 
@@ -18,6 +19,7 @@ Secondary:
 - SRE
 - finance and chargeback consumers
 - upstream data platform teams publishing offline features and events
+- security and compliance stakeholders reviewing governed platform behavior
 
 ## Scope Boundaries
 
@@ -40,10 +42,15 @@ Secondary:
 - execution routing across both internally hosted inference services and externally hosted provider endpoints
 - deployment and reconciliation of internally hosted inference workloads, including API-driven creation of serving pods when required by promotion or experiment rollout
 - CockroachDB-backed authoritative serving state for internal inference deployments, reconciliation progress, and readiness-gated controls
+- DigitalOcean Kubernetes GPU node pool operations for internal inference workloads, including quota-aware scheduling, right-sizing, and capacity reporting
 - Redis-backed online feature serving for the customer realtime path
 - serving-owned offline/online parity and reconciliation for that online feature path
 - broader online feature platform semantics for feature definitions, freshness, rebuild, and serving contracts
+- API-managed rollout semantics for repo-owned models, prompts, and agents, including candidate, canary, shadow, A/B, rollback, deprecation, and retirement controls
+- agentic orchestration contracts and MCP server integration for governed tool and enterprise data access
+- tenant-scoped usage accounting and cost allocation for training and inference workloads
 - integration with shared prerequisite platform resources from `../example-data-pipeline-w-ml` where reuse is viable
+- optional cloud portability patterns so execution targets may later extend beyond DigitalOcean without changing core control-plane contracts
 
 ### Out of Scope
 
@@ -52,8 +59,9 @@ Secondary:
 - ownership of the data platform's generic Iceberg datasets outside ML registry writes
 - Kafka topic production
 - schema-registry administration
-- GPU scheduling and generic infrastructure provisioning
 - product-specific quality-threshold definition
+- mandatory dependence on AWS, Azure, or other cloud-managed AI services for core operation
+- heavyweight identity, secrets, service-mesh, or observability platform components beyond Kubernetes-native and application-native mechanisms in the initial build
 
 ## Ownership Boundary Versus Data Platform
 
@@ -63,8 +71,11 @@ This repo now owns:
 - model registry writes and reads
 - inference APIs
 - experimentation and rollout logic
+- prompt and agent rollout contracts
+- MCP integration contracts
 - Redis-backed online feature serving
 - offline/online feature parity checks owned by serving
+- DigitalOcean-hosted internal inference deployment and GPU-serving control
 
 The upstream data repo remains an external dependency only. It publishes offline feature tables and upstream events, but those datasets and pipelines are not re-owned here.
 
@@ -78,7 +89,7 @@ Shared prerequisite resources from `../example-data-pipeline-w-ml` may be reused
 - Schema Registry
 - dbt
 
-This reuse is mandatory for deployment in DigitalOcean Kubernetes. This repo must consume the existing PostgreSQL, MinIO, Kafka, and Iceberg platform services rather than introducing duplicate services here.
+This reuse is mandatory for deployment in DigitalOcean Kubernetes. This repo must consume the existing PostgreSQL, MinIO, Kafka, and Iceberg platform services rather than introducing duplicate services here, while keeping interfaces portable enough that optional future cloud adapters can be layered on later.
 
 ## Explicit Upstream Dependencies
 
@@ -111,11 +122,15 @@ The system is successful when:
 - repo-owned models can move through an explicit lifecycle rather than implicit latest-row selection only
 - inference can resolve the current repo-owned model version from the registry
 - internal inference targets can be deployed, become ready, and receive traffic under explicit control-plane and experiment-rollout rules
+- DigitalOcean GPU-backed inference capacity can be partitioned, scheduled, and reported with tenant-aware usage visibility
 - experiment evaluation uses GrowthBook-compatible statistics over Iceberg/Trino-backed metrics, including CUPED, Bayesian inference, and sequential testing
+- prompts and agents can move through explicit rollout paths under the same governance discipline as models
+- MCP-exposed tools and data sources can be bound to explicit capability schemas, tenant policies, and auditable invocation paths
 - customer realtime scoring can merge offline context with Redis-backed hot features
 - campaign and advertiser scoring can execute from offline features
 - serving parity checks can detect mismatches between expected and actual Redis online records
 - online feature definitions can express entity keys, freshness, TTL, rebuild expectations, and parity obligations
+- the baseline platform remains lean, API-managed, and deployable on DigitalOcean without requiring Keycloak, External Secrets, service mesh, or a centralized observability stack in the initial build
 
 ## Explicit Open Questions
 

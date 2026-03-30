@@ -40,6 +40,11 @@
 38. A model version must not receive routed traffic through an internal inference target until the corresponding serving workload has been reconciled, is ready, and is bound to the intended model version and target identity.
 39. API-driven promotion or experiment rollout may create or update internal inference pods, but those actions must mutate explicit desired state rather than issuing ad hoc unmanaged pod creation.
 40. CockroachDB is the authoritative store for desired and observed state of internal inference deployments, including reconciliation progress and readiness-gated serving controls; routing eligibility for internal targets must derive from that authoritative state.
+41. DigitalOcean-hosted GPU capacity is a governed platform resource; tenant or workload allocation, scheduling, and scaling decisions must be explicit, auditable, and bounded by quota or policy rather than ad hoc operator action.
+42. Prompt versions, agent definitions, and MCP tool bindings must move through explicit versioned rollout states; they must not become active through implicit latest-row or in-place mutation behavior.
+43. MCP-exposed tools and enterprise data connections must be tenant-scoped, policy-gated, and fail closed when capability binding or authorization cannot be proven.
+44. The initial platform build must remain deployable without requiring Keycloak, External Secrets, service mesh, OpenTelemetry, Prometheus, Loki, or Tempo/Jaeger; authentication, secret delivery, and operational visibility may initially be satisfied by Kubernetes-native and application-native mechanisms.
+45. Core control-plane, routing, model lifecycle, prompt lifecycle, agent lifecycle, and MCP contracts must remain portable enough that optional future cloud-provider adapters can be added without changing authoritative API semantics or stored decision records.
 
 ## Known Gaps That Must Be Preserved As Gaps
 

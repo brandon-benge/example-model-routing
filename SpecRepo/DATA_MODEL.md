@@ -168,6 +168,83 @@
   - `execution_class=gpu` is permitted only for inference-serving workloads
   - a deployment may not be considered ready unless `ready_replicas >= 1`
 
+### Entity: `ComputePool`
+
+- Purpose: governed definition of a DigitalOcean-backed execution capacity class used by internal serving workloads
+- Source: control plane
+- Mutability: mutable
+- Primary key:
+  - `compute_pool_id`
+- Schema:
+  - `compute_pool_id`: string
+  - `pool_name`: string
+  - `environment`: string
+  - `execution_class`: enum `cpu` | `gpu`
+  - `node_pool_name`: string
+  - `tenant_scope`: string or `global`
+  - `quota_reference`: string | null
+  - `cost_rate_reference`: string | null
+  - `enabled`: boolean
+  - `metadata`: object
+- Validation rules:
+  - `node_pool_name` must identify a DigitalOcean node pool available to the target environment
+  - `execution_class=gpu` must not be assigned to non-serving control-plane workloads
+
+### Entity: `PromptVersion`
+
+- Purpose: explicit versioned prompt artifact governed by rollout and experiment policy
+- Source: control plane
+- Mutability: immutable per version
+- Primary key:
+  - `prompt_id + version_id`
+- Schema:
+  - `prompt_id`: string
+  - `version_id`: string
+  - `tenant_scope`: string or `global`
+  - `status`: enum `candidate` | `active` | `paused` | `canary` | `shadow` | `rollback_candidate` | `deprecated` | `retired`
+  - `content_ref`: string
+  - `created_at`: timestamp
+  - `created_by`: string
+  - `metadata`: object
+
+### Entity: `AgentDefinitionVersion`
+
+- Purpose: explicit versioned agent definition governed by rollout and policy
+- Source: control plane
+- Mutability: immutable per version
+- Primary key:
+  - `agent_id + version_id`
+- Schema:
+  - `agent_id`: string
+  - `version_id`: string
+  - `tenant_scope`: string or `global`
+  - `status`: enum `candidate` | `active` | `paused` | `canary` | `shadow` | `rollback_candidate` | `deprecated` | `retired`
+  - `prompt_version_refs`: list[string]
+  - `tool_binding_refs`: list[string]
+  - `created_at`: timestamp
+  - `created_by`: string
+  - `metadata`: object
+
+### Entity: `MCPServerBinding`
+
+- Purpose: explicit registration of an MCP server version and its callable capabilities under tenant policy
+- Source: control plane
+- Mutability: mutable registration with immutable version references
+- Primary key:
+  - `mcp_binding_id`
+- Schema:
+  - `mcp_binding_id`: string
+  - `server_name`: string
+  - `server_version`: string
+  - `tenant_scope`: string or `global`
+  - `capability_schema_ref`: string
+  - `enabled`: boolean
+  - `endpoint_reference`: string
+  - `policy_reference`: string
+  - `created_at`: timestamp
+  - `updated_at`: timestamp
+  - `metadata`: object
+
 ### Entity: `Snapshot`
 
 - Purpose: versioned regional decision snapshot combining routing policy, experiment, provider availability, budget, and endpoint policy state
@@ -240,6 +317,32 @@
 - Validation rules:
   - one chargeback record may exist per `decision_id`
   - chargeback failure must be represented through `billable_state=chargeback_failed` rather than absence
+
+### Entity: `UsageCostAllocationRecord`
+
+- Purpose: immutable usage and cost attribution record for training, deployment, or inference activity
+- Source: metering, projection, or finance pipeline
+- Mutability: immutable
+- Primary key:
+  - `allocation_id`
+- Schema:
+  - `allocation_id`: string
+  - `tenant_id`: string
+  - `decision_id`: string | null
+  - `training_job_id`: string | null
+  - `deployment_id`: string | null
+  - `prompt_id`: string | null
+  - `prompt_version_id`: string | null
+  - `agent_id`: string | null
+  - `agent_version_id`: string | null
+  - `resource_class`: enum `cpu` | `gpu` | `storage` | `provider_usage`
+  - `usage_amount`: number
+  - `usage_unit`: string
+  - `cost_amount`: number | null
+  - `cost_currency`: string | null
+  - `cost_basis`: enum `observed` | `estimated`
+  - `recorded_at`: timestamp
+  - `metadata`: object
 
 ### Entity: `ExperimentExposureRecord`
 

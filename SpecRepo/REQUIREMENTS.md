@@ -94,6 +94,19 @@
   - reject or fall back according to routing policy when an internal deployment is missing, unhealthy, or not yet ready
   - bind the selected target to the exact deployed model version intended by control-plane state
 
+### FR-4D: Govern GPU Capacity And Scheduling
+
+- Actor: platform operator, deployment reconciler, or rollout automation
+- Trigger: an internal inference workload requests or changes GPU-backed execution capacity
+- The system must:
+  - represent GPU execution intent explicitly in desired deployment state
+  - bind each GPU-backed serving deployment to a named DigitalOcean node pool or equivalent capacity class
+  - enforce tenant-aware quota, replica, and placement policy before a GPU workload becomes active
+  - record requested versus admitted GPU capacity for audit and cost attribution
+  - expose current deployment class, replica counts, and capacity references through deployment inspection APIs
+- Failure behavior:
+  - if required GPU capacity or quota cannot be proven, the deployment must remain pending or failed and must not become routable
+
 ### FR-5: Publish Routing Configuration With GrowthBook Bindings
 
 - Actor: control-plane operator via API
@@ -112,6 +125,18 @@
   - allow routing publication workflows that reference GrowthBook experiments to declare required internal deployment state
   - reconcile or verify that required internal inference workloads exist before the target becomes eligible for assignment
   - support rollout stages where an internal deployment exists but is not yet traffic-bearing until readiness and policy conditions are met
+
+### FR-5J: Govern Prompt, Agent, And MCP Rollout
+
+- Actor: control-plane operator, agent engineer, or rollout automation
+- Trigger: a prompt version, agent definition, or MCP tool binding is created, updated, promoted, shadowed, or retired
+- The system must:
+  - expose API-managed versioning and rollout workflows for prompts, agents, and MCP capability bindings
+  - support explicit states for candidate, canary, active, paused, rollback, deprecated, and retired artifacts where applicable
+  - allow routing policies and experiment bindings to reference prompt, agent, and MCP versions explicitly rather than by mutable alias alone
+  - record approval and change metadata for every promotion, rollback, or retirement action
+- Failure behavior:
+  - if the referenced prompt, agent, or MCP binding version is missing, invalid, or not active for the requested tenant, routing or execution must fail closed
 
 ### FR-5E: Govern Experiment Lifecycle and Guardrails
 
@@ -186,7 +211,7 @@
 - Actor: control-plane operator
 - Trigger: an operator needs to manage routes, models, experiments, or published state
 - The system must:
-  - expose API endpoints for model registration, promotion, route creation and update, routing-policy publication, decision inspection, projection inspection, and snapshot inspection
+  - expose API endpoints for model registration, promotion, route creation and update, routing-policy publication, decision inspection, projection inspection, snapshot inspection, prompt or agent rollout, and MCP server or tool-binding administration
   - support operator workflows without requiring a first-party browser UI
   - keep operator actions auditable and version-bound under the same control-plane rules as other managed changes
 
@@ -247,6 +272,17 @@
 - The system must:
   - derive immutable, tenant-scoped, joinable chargeback and audit records keyed by `decision_id`
   - record failures explicitly rather than dropping records
+
+### FR-7C: Derive Usage And Cost Allocation Representations
+
+- Actor: usage metering and finance consumers
+- Trigger: a training job, internal inference execution, or external provider execution produces attributable usage
+- The system must:
+  - derive tenant-scoped usage and cost allocation records for CPU, GPU, storage, and provider-billed execution where available
+  - preserve joins back to the originating decision, deployment, training job, prompt version, or agent version when applicable
+  - distinguish estimated from observed cost inputs in a stable schema
+- Failure behavior:
+  - missing or late cost inputs must be represented explicitly rather than silently omitted
 
 ### FR-7A: Derive Replayable Feedback Records
 
@@ -343,6 +379,48 @@
   - normal promotion from a validated candidate version
   - an exception-based promotion mode that records override metadata when required validation or tests did not pass
 - Promotion of an internally hosted model version may trigger creation or update of an internal inference deployment before production routing activation succeeds.
+
+### FR-10D: Govern Prompt And Agent Lifecycle
+
+- Actor: control-plane operator, agent engineer, or automation
+- Trigger: a prompt version or agent definition is registered, promoted, canaried, paused, rolled back, deprecated, or retired
+- The system must support explicit lifecycle states for prompts and agents:
+  - `candidate`
+  - `active`
+  - `paused`
+  - `canary`
+  - `shadow`
+  - `rollback_candidate`
+  - `deprecated`
+  - `retired`
+- The system must:
+  - require activation or rollout changes to be explicit and auditable
+  - allow routing or experiment policies to bind to exact prompt or agent versions
+  - prevent retired prompt or agent versions from receiving newly admitted traffic
+
+### FR-10E: Expose Prompt And Agent Lifecycle APIs
+
+- Actor: control-plane operator or automation
+- Trigger: a caller needs to inspect or mutate lifecycle state for a prompt version or agent definition
+- The system must expose:
+  - `POST /api/v1/prompts`
+  - `POST /api/v1/prompts/{prompt_id}/versions/{version_id}:promote`
+  - `POST /api/v1/agents`
+  - `POST /api/v1/agents/{agent_id}/versions/{version_id}:promote`
+  - `GET /api/v1/prompts/{prompt_id}/versions/{version_id}`
+  - `GET /api/v1/agents/{agent_id}/versions/{version_id}`
+
+### FR-10F: Govern MCP Server And Tool Bindings
+
+- Actor: control-plane operator, agent engineer, or platform automation
+- Trigger: an MCP server registration or tool binding is created, updated, enabled, disabled, or retired
+- The system must:
+  - register MCP servers and their exposed capabilities under explicit tenant scope
+  - bind tool schemas and invocation policy to named MCP server versions
+  - require explicit activation before an MCP capability can be selected by a governed agent path
+  - expose inspection APIs for current and historical MCP server or tool-binding state
+- Failure behavior:
+  - unknown, unauthorized, or disabled MCP capabilities must not be callable through governed execution paths
 
 ### FR-10A: Expose Training Job APIs
 
