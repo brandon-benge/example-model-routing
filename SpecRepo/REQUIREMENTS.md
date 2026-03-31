@@ -61,7 +61,7 @@
 - Trigger: a model version is promoted, an experiment rollout requires an internal serving target, or serving desired state changes
 - The system must:
   - maintain explicit desired state for internally hosted inference workloads
-  - persist desired and observed internal inference deployment state in CockroachDB as the authoritative serving-state store
+  - persist desired and observed internal inference deployment state in PostgreSQL as the authoritative serving-state store
   - reconcile that desired state into workload resources such as Kubernetes deployments, replica sets, services, or equivalent serving primitives
   - bind each deployed internal inference workload to:
     - target identifier
@@ -70,7 +70,7 @@
     - execution class (`cpu` or `gpu`)
     - replica policy
     - environment or namespace
-  - record reconciliation progress and readiness state in CockroachDB before the workload becomes eligible for routing
+  - record reconciliation progress and readiness state in PostgreSQL before the workload becomes eligible for routing
 - Failure behavior:
   - if the workload cannot be reconciled or does not become ready, the target must remain unroutable
 
@@ -90,7 +90,7 @@
 - Actor: routing layer
 - Trigger: a routing policy references an internal inference target
 - The system must:
-  - consider an internal target admissible only when the corresponding deployment is in a ready state as recorded in CockroachDB
+  - consider an internal target admissible only when the corresponding deployment is in a ready state as recorded in PostgreSQL
   - reject or fall back according to routing policy when an internal deployment is missing, unhealthy, or not yet ready
   - bind the selected target to the exact deployed model version intended by control-plane state
 
@@ -595,7 +595,7 @@
 ### Deployment Placement
 
 - if a dedicated GPU node pool is provisioned, only inference-serving workloads that execute model inference may tolerate GPU taints or select GPU nodes
-- control-plane API, routing API, snapshot builder, projection workers, feedback/replay services, training job orchestration, registry inspection APIs, online feature services, Redis, PostgreSQL, CockroachDB, Kafka, and other supporting infrastructure must schedule onto the default non-GPU node pool
+- control-plane API, routing API, snapshot builder, projection workers, feedback/replay services, training job orchestration, registry inspection APIs, online feature services, Redis, PostgreSQL, Kafka, and other supporting infrastructure must schedule onto the default non-GPU node pool
 - the existence of a GPU node pool must not broaden placement for general compute workloads in this repo
 
 ### Shared Resource Reuse
@@ -609,7 +609,6 @@
   - Iceberg
   - Schema Registry
   - dbt
-- CockroachDB is the explicit exception to generic relational-store reuse: it is the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls
 - new dedicated instances should be introduced only when there is a clear requirement for isolation, incompatible lifecycle, capacity separation, or security boundary separation that makes reuse impossible
 - reused shared resources must still provide:
   - explicit namespace, schema, bucket, topic, connector, catalog, and job naming for this repo's assets
@@ -624,7 +623,7 @@
 - all workloads are expected to run as Kubernetes workloads in DigitalOcean
 - object storage is MinIO-compatible and addressed through S3 APIs
 - registry I/O is performed through Trino
-- CockroachDB stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated serving controls
+- PostgreSQL stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated serving controls
 - Redis is required for the customer hot-feature path
 
 ### Tests

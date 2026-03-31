@@ -16,7 +16,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 - model lifecycle governance for repo-owned trained versions
 - broader online feature platform semantics beyond a single Redis hash path
 - a required integration stance that reuses prerequisite shared platform resources from `../example-data-pipeline-w-ml`
-- CockroachDB as the authoritative serving-state store for internal inference deployment reconciliation and readiness-gated controls
+- PostgreSQL as the authoritative serving-state store for internal inference deployment reconciliation and readiness-gated controls
 - GrowthBook as the experimentation control plane, using server-side SDK evaluation and warehouse-SQL metrics
 - DigitalOcean GPU node-pool-aware serving controls for internal inference workloads
 - prompt and agent lifecycle governance under the same API-managed rollout discipline as models
@@ -77,7 +77,7 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
 ### Component: Internal Inference Deployment Reconciler
 
 - Responsibility:
-  - persist and read authoritative desired and observed serving state in CockroachDB
+  - persist and read authoritative desired and observed serving state in PostgreSQL
   - translate desired internal inference deployment state into actual serving workloads
   - create, update, scale, and retire pods or equivalent serving resources for internal targets
   - publish readiness and health state consumed by routing and promotion workflows
@@ -319,8 +319,6 @@ The absorbed ML workflow is an additional subsystem inside that architecture, no
   - Iceberg
   - Schema Registry
   - dbt
-- explicit exception:
-  - CockroachDB remains the authoritative store for internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls even when shared PostgreSQL is reused for other metadata
 - required safeguards:
   - separate schemas, buckets, topics, connector names, Iceberg namespaces, and dbt models for this repo's assets
   - no ownership ambiguity over upstream platform-managed assets

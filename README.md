@@ -39,7 +39,6 @@ flowchart LR
 
     subgraph Storage
         PG[(PostgreSQL)]
-        CRDB[(CockroachDB)]
         OBJ[(Object Storage)]
         REDIS[(Redis)]
         KAFKA[(Kafka)]
@@ -52,7 +51,6 @@ flowchart LR
 
     OP --> CPA
     CPA --> PG
-    CPA --> CRDB
     CPA --> OBJ
     CPA --> KAFKA
     CPA --> GB
@@ -65,7 +63,6 @@ flowchart LR
     SC --> RA
     RA --> REDIS
     RA --> PG
-    RA --> CRDB
     RA --> GB
     RA --> EG
     RA --> KAFKA
@@ -109,7 +106,7 @@ sequenceDiagram
 sequenceDiagram
     actor Operator
     participant API as Control Plane API
-    participant DB as CockroachDB
+    participant DB as PostgreSQL
     participant Obj as Object Storage
     participant Reconciler as Inference Deployment Reconciler
     participant Internal as Internal Inference Service
@@ -195,8 +192,7 @@ The required runtime is Kubernetes in DigitalOcean. The baseline stack is:
 - `inference-deployment-reconciler`: controller that creates or updates internal inference-serving workloads
 - `snapshot-worker`: Python worker
 - `projection-worker`: Python worker
-- `postgres`: reused existing PostgreSQL service for durable metadata and decision store
-- `cockroachdb`: authoritative store for internal inference deployment state, reconciliation progress, and readiness-gated serving controls
+- `postgres`: reused existing PostgreSQL service for durable metadata, decision store, and internal inference deployment state
 - `object-storage`: reused existing MinIO-compatible artifact store for model binaries, manifests, datasets, and metrics
 - `redis`: regional snapshot cache
 - `kafka`: reused existing Kafka service for event bus and projection fanout
@@ -216,10 +212,6 @@ Required shared resources:
 - Iceberg
 - Schema Registry
 - dbt
-
-Explicit exception:
-
-- CockroachDB remains the authoritative serving-state database for internal inference deployment desired state, observed state, reconciliation, and readiness gating even though existing PostgreSQL is reused for broader metadata
 
 This means:
 
@@ -246,8 +238,7 @@ The initial build intentionally does not require Keycloak, External Secrets, ser
 
 Storage responsibilities are split deliberately:
 
-- PostgreSQL stores relational metadata, configuration, decisions, and derived records outside the internal serving-state authority boundary
-- CockroachDB stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated controls
+- PostgreSQL stores relational metadata, configuration, decisions, derived records, and authoritative internal inference deployment desired and observed state
 - object storage stores model binaries, manifests, datasets, and evaluation artifacts
 - Redis stores hot routing and feature-serving state
 - Kafka carries asynchronous events
@@ -411,7 +402,6 @@ Required namespaces:
 - `model-routing-control-plane`: control-plane API
 - `model-routing-data-plane`: routing API, execution gateway, snapshot worker, and projection worker
 - `model-routing-data`: Redis and Keycloak when self-managed in-cluster; reused PostgreSQL, object storage, and Kafka services are consumed from the existing platform footprint instead of duplicated here
-- `model-routing-serving-state`: CockroachDB for authoritative internal inference deployment state and readiness-gated controls when not consumed as an existing shared service
 
 Baseline container ports:
 
@@ -419,7 +409,6 @@ Baseline container ports:
 - `routing-api`: `8004`
 - `execution-gateway`: `8005`
 - `postgres`: `5432`
-- `cockroachdb`: `26257`
 - `object-storage`: `9000`
 - `redis`: `6379`
 - `kafka`: `9092`
@@ -509,7 +498,6 @@ Open source defaults for the initial build:
 
 - Backend APIs and workers: Python, FastAPI, Pydantic
 - Database: reused PostgreSQL
-- Serving-state database: CockroachDB
 - Object storage: reused MinIO-compatible S3 API
 - Cache: Redis
 - Messaging: reused Kafka

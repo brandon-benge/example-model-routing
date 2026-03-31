@@ -12,7 +12,7 @@
 ### Workflow: Internal Inference Deployment Reconciliation
 
 - Required guarantee:
-  - internal serving desired state and observed deployment state are durably persisted in CockroachDB and reconciled into explicit workload state before routing treats the target as ready
+  - internal serving desired state and observed deployment state are durably persisted in PostgreSQL and reconciled into explicit workload state before routing treats the target as ready
 - Failure tolerance:
   - deployment reconciliation failure leaves the target unroutable or fallback-only according to policy
 
@@ -109,7 +109,7 @@
 ## Read Semantics
 
 - strong reads are required for authoritative decision lookup, published routing-policy lookup, captured GrowthBook experiment reference lookup, and decision replay
-- strong reads are required from CockroachDB for internal inference deployment readiness, reconciliation status, and desired-state lookup used in routing eligibility
+- strong reads are required from PostgreSQL for internal inference deployment readiness, reconciliation status, and desired-state lookup used in routing eligibility
 - stale-tolerant reads are allowed for regional snapshot caches, derived projections, and Redis hot features
 - repo-owned model inference reads are manifest-driven and strong relative to the manifest URI returned by the registry query
 

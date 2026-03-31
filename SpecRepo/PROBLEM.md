@@ -41,7 +41,7 @@ Secondary:
 - inference APIs for repo-owned customer, campaign, and advertiser models
 - execution routing across both internally hosted inference services and externally hosted provider endpoints
 - deployment and reconciliation of internally hosted inference workloads, including API-driven creation of serving pods when required by promotion or experiment rollout
-- CockroachDB-backed authoritative serving state for internal inference deployments, reconciliation progress, and readiness-gated controls
+- PostgreSQL-backed authoritative serving state for internal inference deployments, reconciliation progress, and readiness-gated controls
 - DigitalOcean Kubernetes GPU node pool operations for internal inference workloads, including quota-aware scheduling, right-sizing, and capacity reporting
 - Redis-backed online feature serving for the customer realtime path
 - serving-owned offline/online parity and reconciliation for that online feature path

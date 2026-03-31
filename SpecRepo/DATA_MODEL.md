@@ -139,7 +139,7 @@
 
 - Purpose: explicit desired and observed state for one internally hosted inference-serving workload
 - Source: control-plane deployment reconciler
-- Authoritative store: CockroachDB
+- Authoritative store: PostgreSQL
 - Mutability: desired state mutable, observed state updated by reconciliation
 - Primary key:
   - `deployment_id`
