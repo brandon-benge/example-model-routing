@@ -4,10 +4,14 @@ This repository remains the governed source of truth for the model routing and p
 
 It is now extended to also govern the ML-owned workflow absorbed from `../example-ml-platform`, specifically:
 
+- Kubeflow-managed ML pipelines
 - model training
+- ML experiment tracking for repo-owned model development and training workflows
+- model deployment workflows
 - model registry writes and reads
 - inference APIs for ML-owned models
 - experimentation and rollout logic for those models
+- hosted MCP services for governed agent execution
 - Redis-backed online feature serving
 - serving-owned offline/online parity checks
 
@@ -29,13 +33,17 @@ Recommended order:
 This repo owns:
 
 - routing and policy control-plane behavior
+- Kubeflow-backed ML pipeline orchestration, training workflow execution, ML experiment tracking, and model deployment workflows for repo-owned models
 - ML training and model artifact lifecycle for repo-owned models
 - model registry reads and writes
 - inference APIs
+- MCP server hosting, registration, and binding governance
 - Redis-backed online feature serving
 - serving-owned parity and reconciliation behavior
 
 This repo does not absorb ownership of the upstream data platform. The data platform remains an external dependency that publishes offline feature tables and upstream events consumed here.
+
+GrowthBook remains the system of record for feature flags, A/B testing, experiment analysis, and decision rollout control. Kubeflow governs ML workflow execution and ML experiment lineage only.
 
 ## External Dependencies Called Out Explicitly
 

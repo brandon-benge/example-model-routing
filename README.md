@@ -2,13 +2,14 @@
 
 An open source reference project for a lean, multi-tenant AI platform designed to run on Kubernetes in DigitalOcean. The system provides:
 
-- API-managed control-plane workflows for model registration and routing policy publication, with GrowthBook-managed experiments
+- API-managed control-plane workflows for model target registration and routing policy publication, with GrowthBook-managed routing experiments
+- Kubeflow-managed ML pipelines, model training, ML experiment tracking, and model deployment workflows
 - deterministic request-time routing against explicit regional snapshots
 - immutable routing-time decision records for replay and audit
 - asynchronous execution outcome, audit, and chargeback projections
 - model artifacts stored in object storage and referenced by metadata stores rather than embedded in the relational database
 - a V1 platform-proxy execution path with a planned future smart-client primary path
-- DigitalOcean GPU-backed internal inference deployment and readiness-gated rollout
+- readiness-gated internal inference rollout with required promotion-time regular vs GPU-backed namespace selection
 - prompt, agent, and MCP capability lifecycle governance under the same API-managed platform contract
 
 The governed system specification lives in [`SpecRepo/README.md`](SpecRepo/README.md).
@@ -111,8 +112,8 @@ sequenceDiagram
     participant Reconciler as Inference Deployment Reconciler
     participant Internal as Internal Inference Service
 
-    Operator->>API: Promote model or publish routing change referencing GrowthBook state
-    API->>DB: Persist desired internal deployment state
+    Operator->>API: Promote model with serving class or publish routing change referencing GrowthBook state
+    API->>DB: Persist desired internal deployment state and namespace
     API->>Obj: Resolve manifest URI and artifact references
     API->>Reconciler: Reconcile internal inference deployment
     Reconciler->>Internal: Create/update serving pods
@@ -197,6 +198,7 @@ The required runtime is Kubernetes in DigitalOcean. The baseline stack is:
 - `redis`: regional snapshot cache
 - `kafka`: reused existing Kafka service for event bus and projection fanout
 - Kubernetes-native secrets, config maps, and service accounts for initial application configuration and secret delivery
+- GitOps-managed Keycloak realm, client, and bootstrap manifests as the bridge until a fuller security system is available
 - application-native health and structured logging for the initial operational baseline
 
 ## Shared Resource Reuse
@@ -227,12 +229,12 @@ New dedicated resources should only be introduced when isolation, security, life
 
 This repository now represents a lean AI platform baseline rather than only a routing control plane. In addition to routing and repo-owned model workflows, the governed scope includes:
 
-- DigitalOcean GPU-backed internal inference rollout
+- regular and GPU-backed internal inference namespace governance
 - prompt and agent version lifecycle
-- MCP server and tool-binding governance
+- hosted MCP service lifecycle and tool-binding governance
 - tenant-aware usage and cost attribution
 
-The initial build intentionally does not require Keycloak, External Secrets, service mesh, OpenTelemetry, Prometheus, Loki, or Tempo/Jaeger. Those may be layered on later without changing the core API and data contracts.
+The initial build requires Keycloak for identity and access control. Until a fuller security system is available, Keycloak must be populated through GitOps-managed manifests as the bridge pattern. External Secrets, service mesh, OpenTelemetry, Prometheus, Loki, and Tempo/Jaeger may be layered on later without changing the core API and data contracts.
 
 ## Storage Model
 
@@ -258,11 +260,11 @@ The execution gateway is therefore not provider-only. It is the execution router
 
 Internal inference services may be created or updated by API-driven control-plane actions through a deployment reconciler. In other words, promotion or experiment rollout can result in serving pods being created before traffic is admitted.
 
-When GPU-backed inference is required, serving workloads must target the configured DigitalOcean GPU node pool, while control-plane services, workers, and stateful dependencies remain on non-GPU nodes.
+Internal inference deployments are partitioned by serving class. Model promotion must pass `serving_class=regular` or `serving_class=gpu_backed`; the control plane derives the Kubernetes namespace from that choice. `regular` is the baseline path and schedules on non-GPU nodes. `gpu_backed` uses the GPU inference namespace and only becomes routable when GPU capacity and quota are configured and proven.
 
 ## Canonical Submission Endpoint
 
-Model submission to the control plane uses:
+Routable target registration to the control plane uses:
 
 - `POST /api/v1/model-targets`
 
@@ -278,14 +280,13 @@ Minimum request fields:
 Response expectations:
 
 - `model_target_id`
-- assigned `model_version`
+- target registration status
 - initial publish-eligibility or validation status
 - validation result reference or status link
 
 Versioning rule:
 
-- `model_version` is assigned by the control plane, not by the caller
-- it must be a monotonically increasing number per `model_name`
+- repo-owned `model_version` lifecycle is governed separately through the model registry and promotion APIs
 
 ## Additional Governed APIs
 
@@ -295,27 +296,35 @@ The control plane also governs:
 - agent lifecycle through `POST /api/v1/agents`
 - MCP capability registration and inspection through control-plane APIs
 - internal inference deployment state through `/api/v1/inference-deployments...`
+- Kubeflow-backed training and deployment workflow initiation and inspection through training and model lifecycle APIs
 
 ## Canonical Promotion Endpoint
 
-Production promotion uses:
+Repo-owned production promotion uses:
 
-- `POST /api/v1/model-targets/{model_target_id}:promote`
+- `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:promote`
 
 Minimum request intent:
 
-- identify the production route, surface, or policy context that should use the target
+- pass the required serving class:
+  - `regular`
+  - `gpu_backed`
+- identify the production route, surface, or policy context that should use the version
+- for `gpu_backed`, identify or resolve the governed GPU compute pool or capacity reference
 
 Response expectations:
 
-- `model_target_id`
-- assigned `model_version`
+- `feature_group`
+- `model_version`
+- resolved serving class and inference namespace
+- deployment identifier when internal serving is required
 - promotion status
 - promotion record reference
 
 Synchronous orchestration behavior:
 
 - the promote call synchronously invokes routing-policy publish for the affected production context
+- for internal inference targets, production activation requires a ready deployment in the namespace derived from the promotion serving class
 - it returns success only after the routing policy is published and the current snapshot state is available for routing
 
 ## Canonical Routing Publish Endpoint
@@ -336,9 +345,14 @@ This endpoint returns the current snapshot version and staleness metadata for th
 
 ## Canonical Experiment Management
 
-Experiment management is handled in GrowthBook, not through this repo's API surface.
+Experiment management is split explicitly:
+
+- GrowthBook owns feature flags, A/B testing, experiment analysis, and decision rollout control.
+- Kubeflow owns ML pipelines, model training, ML experiment tracking, and model deployment workflows.
 
 This repo consumes referenced GrowthBook experiment, feature, rule, phase, and bucket-version identities during routing-policy publication and routing-time evaluation.
+
+Kubeflow tracking in this repo refers to ML experiments and workflow lineage, not user-facing A/B tests.
 
 ## Canonical Route Mapping Endpoints
 
@@ -381,6 +395,10 @@ Registry inspection is API-driven:
 
 - `GET /api/v1/model-registry/{feature_group}/latest`
 - `GET /api/v1/model-registry/{feature_group}/versions`
+- `GET /api/v1/model-registry/{feature_group}/versions/{model_version}`
+- `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:promote`
+- `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:deprecate`
+- `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:retire`
 
 These endpoints expose the currently selected manifest and historical registry entries for repo-owned models.
 
@@ -401,6 +419,8 @@ Required namespaces:
 - `platform-system`: ingress controller and shared cluster support components for this stack
 - `model-routing-control-plane`: control-plane API
 - `model-routing-data-plane`: routing API, execution gateway, snapshot worker, and projection worker
+- `model-routing-inference-regular`: internal inference-serving workloads promoted with `serving_class=regular`
+- `model-routing-inference-gpu`: internal inference-serving workloads promoted with `serving_class=gpu_backed`
 - `model-routing-data`: Redis and Keycloak when self-managed in-cluster; reused PostgreSQL, object storage, and Kafka services are consumed from the existing platform footprint instead of duplicated here
 
 Baseline container ports:
@@ -419,11 +439,21 @@ Exposure model:
 - `control-plane-api` and `routing-api` are exposed through Kubernetes ingress on HTTPS `443`
 - `execution-gateway`, workers, databases, object storage, cache, Kafka, and Keycloak remain internal by default
 
+Keycloak bootstrap posture:
+
+- Keycloak realm configuration, clients, roles, redirect URIs, and bootstrap bindings must be declared through GitOps-managed manifests
+- GitOps is the temporary bridge for identity population until a dedicated security platform is available
+- bootstrap admin passwords, service-account secrets, and client secrets must never be committed to Git in plaintext
+- those credentials must be generated from high-entropy random material and stored only as encrypted secret manifests or equivalent protected GitOps inputs
+- generated passwords and secrets should provide at least `32` random bytes of entropy or equivalent cryptographic strength
+
 Node placement:
 
-- the DigitalOcean Kubernetes cluster includes a dedicated GPU node pool named `gpu-nodepool`
-- GPU nodes are tainted so pods do not land on them by default
-- only inference-serving pods that execute model inference tolerate the GPU taint and schedule onto `gpu-nodepool`
+- the baseline deployment does not require GPU capacity
+- `regular` inference workloads run in `model-routing-inference-regular` on non-GPU nodes
+- if a dedicated GPU node pool is provisioned, GPU nodes are tainted so pods do not land on them by default
+- only inference-serving pods in `model-routing-inference-gpu` may tolerate the GPU taint or select GPU nodes
+- promotions that request `serving_class=gpu_backed` remain pending or failed until GPU capacity and quota are configured
 - control-plane API, routing API, workers, storage, feature services, and supporting infrastructure remain on the default non-GPU node pool
 - no non-inference workload in this repo may target `gpu-nodepool`
 
@@ -482,6 +512,7 @@ Image policy:
 Operator management workflows are API-only. The control-plane API should support at least:
 
 - create and register model targets through `POST /api/v1/model-targets`
+- promote repo-owned model versions through `POST /api/v1/model-registry/{feature_group}/versions/{model_version}:promote` with an explicit `regular` or `gpu_backed` serving-class decision
 - assign one or more models to an inference route through `POST/PATCH /api/v1/routes...`
 - configure experiments in GrowthBook and route bindings through route and routing-policy APIs
 - publish immutable routing-policy versions through `POST /api/v1/routing-policies/{policy_id}:publish`
@@ -497,12 +528,13 @@ Operator management workflows are API-only. The control-plane API should support
 Open source defaults for the initial build:
 
 - Backend APIs and workers: Python, FastAPI, Pydantic
+- ML workflow orchestration: Kubeflow for pipelines, training workflows, ML experiment tracking, and deployment workflows
 - Database: reused PostgreSQL
 - Object storage: reused MinIO-compatible S3 API
 - Cache: Redis
 - Messaging: reused Kafka
-- Identity and auth baseline: Kubernetes-native and application-native mechanisms
-- Secrets baseline: Kubernetes-native secret delivery
+- Identity and auth baseline: Keycloak plus Kubernetes-native delivery and integration mechanisms
+- Secrets baseline: GitOps-delivered encrypted secret manifests plus Kubernetes-native secret delivery, with no plaintext credentials committed to Git
 - Operational baseline: application health endpoints and structured logs
 - Deployment target: DigitalOcean Kubernetes
 

@@ -108,16 +108,28 @@ Each invariant below uses this structure:
   **Enforcement:** Authoritative desired and observed deployment state, reconciliation, readiness-gated routing checks, target-to-version binding validation, and unroutable or fallback-only treatment when readiness or binding cannot be proven.  
   **Tradeoff:** This delays rollout and recovery until control-plane state converges.
 
+- **Invariant:** A repo-owned model version must never be promoted for internal inference without an explicit serving-class decision that resolves to exactly one governed inference namespace.  
+  **Enforcement:** Promotion API validation, append-only lifecycle transition records, deterministic serving-class-to-namespace mapping, and rejection when serving class or namespace resolution is missing or ambiguous.  
+  **Tradeoff:** This adds an operator decision and prevents implicit defaulting during promotion.
+
+- **Invariant:** An internally hosted MCP capability must never be callable before the corresponding hosted MCP workload is reconciled, ready, auth-configured, and bound to the intended MCP server binding and server version.  
+  **Enforcement:** Authoritative desired and observed MCP deployment state, binding-to-deployment validation, readiness- and auth-gated execution checks, and fail-closed rejection when readiness, binding, or service identity cannot be proven.  
+  **Tradeoff:** This slows tool rollout and recovery relative to unmanaged endpoint registration.
+
 ## Safe Governance
 
 ### Authorization And Capability Boundaries
+
+- **Invariant:** Keycloak bootstrap credentials, client secrets, and administrative passwords must never be stored in plaintext Git-managed configuration.  
+  **Enforcement:** GitOps-delivered encrypted secret material only, deployment rejection for plaintext secret inputs, and operational policy requiring high-entropy generated credentials before activation.  
+  **Tradeoff:** This increases bootstrap and rotation complexity relative to ad hoc manual credential setup.
 
 - **Invariant:** Protected operations must never proceed when authorization or capability binding cannot be proven.  
   **Enforcement:** Fail-closed authorization checks, policy-gated MCP bindings, tenant-scope validation, active-version checks before execution or mutation, and denial when uncertainty, timeout, missing binding, or validation failure occurs.  
   **Tradeoff:** This reduces availability during dependency failures but preserves security boundaries.
 
-- **Invariant:** An MCP capability must never be callable unless its tenant scope, policy binding, and active authorization state are proven.  
-  **Enforcement:** `MCPServerBinding`, policy references, active-version checks, execution-gateway validation before invocation, and fail-closed rejection for unknown, unauthorized, disabled, or unprovable bindings.  
+- **Invariant:** An MCP capability must never be callable unless its tenant scope, policy binding, active authorization state, and hosting readiness for internally hosted servers are proven.  
+  **Enforcement:** `MCPServerBinding`, `MCPServerDeployment`, policy references, active-version checks, execution-gateway validation before invocation, and fail-closed rejection for unknown, unauthorized, disabled, unready, or unprovable bindings.  
   **Tradeoff:** This can reduce tool availability during policy or configuration drift.
 
 ### Experiment Integrity
@@ -137,7 +149,7 @@ Each invariant below uses this structure:
 ### Lifecycle Integrity
 
 - **Invariant:** A repo-owned model version must never become candidate, production-active, deprecated, or retired through inference-time ambiguity or in-place mutation alone.  
-  **Enforcement:** Lifecycle APIs, append-only transition records, validation gates, explicit override metadata for exception-based promotion, and fail-closed transition handling when target identity, approval metadata, or transition validity cannot be proven.  
+  **Enforcement:** Lifecycle APIs, append-only transition records, validation gates, required serving-class metadata for internal promotion, explicit override metadata for exception-based promotion, and fail-closed transition handling when target identity, approval metadata, serving class, or transition validity cannot be proven.  
   **Tradeoff:** This slows release velocity relative to implicit latest-version activation.
 
 - **Invariant:** Prompt versions, agent definition versions, and MCP binding versions must never become active through mutable aliases, latest-row ambiguity, or in-place mutation.  

@@ -67,12 +67,25 @@
     - target identifier
     - model version
     - artifact manifest URI
+    - serving class (`regular` or `gpu_backed`)
     - execution class (`cpu` or `gpu`)
     - replica policy
-    - environment or namespace
+    - environment
+    - namespace
   - record reconciliation progress and readiness state in PostgreSQL before the workload becomes eligible for routing
 - Failure behavior:
   - if the workload cannot be reconciled or does not become ready, the target must remain unroutable
+
+### FR-4A1: Derive Inference Namespace From Serving Class
+
+- Actor: control-plane promotion workflow or deployment reconciler
+- Trigger: an internal inference deployment is created or updated
+- The system must:
+  - require every internal inference deployment to declare a serving class of `regular` or `gpu_backed`
+  - derive the Kubernetes namespace from that serving class rather than allowing arbitrary namespace selection at promotion time
+  - map `regular` deployments into the governed regular inference namespace
+  - map `gpu_backed` deployments into the governed GPU inference namespace
+  - reject desired state when serving class and namespace mapping are missing, contradictory, or non-governed
 
 ### FR-4B: Expose Internal Inference Deployment APIs
 
@@ -99,13 +112,53 @@
 - Actor: platform operator, deployment reconciler, or rollout automation
 - Trigger: an internal inference workload requests or changes GPU-backed execution capacity
 - The system must:
-  - represent GPU execution intent explicitly in desired deployment state
+  - represent GPU execution intent explicitly in desired deployment state through `serving_class=gpu_backed`
   - bind each GPU-backed serving deployment to a named DigitalOcean node pool or equivalent capacity class
   - enforce tenant-aware quota, replica, and placement policy before a GPU workload becomes active
   - record requested versus admitted GPU capacity for audit and cost attribution
-  - expose current deployment class, replica counts, and capacity references through deployment inspection APIs
+  - expose current serving class, deployment namespace, replica counts, and capacity references through deployment inspection APIs
 - Failure behavior:
   - if required GPU capacity or quota cannot be proven, the deployment must remain pending or failed and must not become routable
+
+### FR-4E: Reconcile Hosted MCP Services
+
+- Actor: control-plane deployment reconciler
+- Trigger: an MCP server version is activated for internal hosting, an agent rollout requires a hosted MCP service, or hosted MCP desired state changes
+- The system must:
+  - maintain explicit desired state for internally hosted MCP services
+  - persist desired and observed hosted MCP deployment state in PostgreSQL as authoritative serving state
+  - reconcile that desired state into workload resources such as Kubernetes deployments, replica sets, services, or equivalent serving primitives
+  - bind each hosted MCP workload to:
+    - MCP binding identifier
+    - server name
+    - server version
+    - endpoint reference
+    - auth mode or service identity reference
+    - replica policy
+    - environment or namespace
+  - record reconciliation progress, readiness state, and published endpoint state in PostgreSQL before the service becomes callable
+- Failure behavior:
+  - if the workload cannot be reconciled, authenticated, or does not become ready, the corresponding MCP capability must remain uncallable
+
+### FR-4F: Expose Hosted MCP Deployment APIs
+
+- Actor: control-plane operator, agent engineer, or rollout automation
+- Trigger: a caller needs to create, update, inspect, or retire a hosted MCP workload
+- The system must expose:
+  - `POST /api/v1/mcp-deployments`
+  - `PATCH /api/v1/mcp-deployments/{deployment_id}`
+  - `GET /api/v1/mcp-deployments/{deployment_id}`
+  - `POST /api/v1/mcp-deployments/{deployment_id}:retire`
+- The create or update path may cause pods to be created, replaced, or scaled by the deployment reconciler.
+
+### FR-4G: Gate MCP Invocation On Hosted Deployment Readiness
+
+- Actor: execution gateway
+- Trigger: a governed agent path selects an MCP capability backed by an internally hosted MCP server
+- The system must:
+  - consider the capability callable only when the corresponding hosted MCP deployment is in a ready state as recorded in PostgreSQL
+  - require the resolved endpoint reference and auth configuration to match the active MCP binding and server version
+  - fail closed when a hosted MCP deployment is missing, unhealthy, unauthorized, or not yet ready
 
 ### FR-5: Publish Routing Configuration With GrowthBook Bindings
 
@@ -155,6 +208,17 @@
   - prevent this repo from publishing a routing policy that references a GrowthBook experiment whose targeting, allocation, metric definitions, or analysis settings are invalid
   - allow `paused` state to stop new exposure assignment without this repo rewriting a duplicate immutable experiment payload
   - support an API-driven kill switch that immediately stops new assignment for a running GrowthBook experiment
+  - keep GrowthBook responsibility scoped to feature flags, A/B testing, experiment analysis, and decision rollout control rather than ML training workflow tracking
+
+### FR-5E2: Separate GrowthBook And Kubeflow Experiment Responsibilities
+
+- Actor: control-plane operator, ML/platform engineer, GrowthBook operator, or Kubeflow automation
+- Trigger: a governed workflow needs experiment configuration, analysis, rollout control, training lineage, or ML workflow execution tracking
+- The system must:
+  - use GrowthBook as the system of record for feature flags, A/B testing, assignment, exposure accounting, experiment analysis, and decision rollout control
+  - use Kubeflow as the system of record for ML pipelines, model training workflows, ML experiment tracking, and model deployment workflows
+  - prevent ML training lineage or model deployment workflow state from being represented as GrowthBook experiment state
+  - prevent GrowthBook feature-flag or A/B rollout state from being represented as Kubeflow ML experiment tracking state
 
 ### FR-5E1: Support Dynamic Traffic Allocation
 
@@ -214,6 +278,19 @@
   - expose API endpoints for model registration, promotion, route creation and update, routing-policy publication, decision inspection, projection inspection, snapshot inspection, prompt or agent rollout, and MCP server or tool-binding administration
   - support operator workflows without requiring a first-party browser UI
   - keep operator actions auditable and version-bound under the same control-plane rules as other managed changes
+
+### FR-5B: Populate Keycloak Through GitOps Bridge
+
+- Actor: platform operator or GitOps automation
+- Trigger: baseline platform bootstrap, Keycloak realm change, client change, role change, or bootstrap credential rotation
+- The system must:
+  - populate required Keycloak realms, clients, roles, redirect URIs, service accounts, and bootstrap bindings through GitOps-managed manifests
+  - treat GitOps-managed Keycloak population as the temporary bridge until a dedicated security system is available
+  - require sensitive Keycloak inputs such as admin passwords, bootstrap-user passwords, and client secrets to be supplied only through encrypted secret manifests or equivalent protected GitOps inputs
+  - reject plaintext credentials in source-controlled manifests
+  - require generated Keycloak passwords and secrets to be high-entropy cryptographic values
+- Failure behavior:
+  - if GitOps-managed Keycloak configuration is incomplete, malformed, or missing required encrypted secret inputs, the baseline identity posture must be considered unready
 
 ### FR-5C: Expose Route Management APIs
 
@@ -360,6 +437,8 @@
   - `retired`
 - The system must:
   - require promotion into `production` to be explicit and auditable
+  - require every promotion for an internally hosted inference target to include an explicit serving-class decision of `regular` or `gpu_backed`
+  - treat the serving-class decision as the source of truth for the target inference namespace
   - preserve prior production references for rollback
   - prevent retired versions from being newly selected for routing or scoring
   - expose deprecation metadata and retirement reason
@@ -378,6 +457,10 @@
 - The promote endpoint must support:
   - normal promotion from a validated candidate version
   - an exception-based promotion mode that records override metadata when required validation or tests did not pass
+  - a required serving-class field for internally hosted inference promotion:
+    - `regular`
+    - `gpu_backed`
+  - response metadata that returns the resolved deployment namespace and, when applicable, the deployment identifier
 - Promotion of an internally hosted model version may trigger creation or update of an internal inference deployment before production routing activation succeeds.
 
 ### FR-10D: Govern Prompt And Agent Lifecycle
@@ -417,6 +500,7 @@
 - The system must:
   - register MCP servers and their exposed capabilities under explicit tenant scope
   - bind tool schemas and invocation policy to named MCP server versions
+  - support bindings whose server versions are either externally referenced or internally hosted through an explicit hosted deployment record
   - require explicit activation before an MCP capability can be selected by a governed agent path
   - expose inspection APIs for current and historical MCP server or tool-binding state
 - Failure behavior:
@@ -431,6 +515,7 @@
   - `GET /api/v1/training-jobs/{training_job_id}`
 - The create endpoint must accept, at minimum, the requested feature group and any explicit table or artifact overrides supported by the training workflow.
 - The read endpoint must expose job status, validation/test outcomes, and any resulting artifact or registry references.
+- Training job execution and lineage may be backed by Kubeflow pipelines or runs, and the API should preserve the Kubeflow run or workflow reference when available.
 - When validation passes, the normal outcome is candidate publication only.
 - When validation fails, the job must not publish through the normal candidate-first path, but the resulting version may still be eligible for explicit exception-based promotion through the lifecycle API.
 
@@ -594,7 +679,10 @@
 
 ### Deployment Placement
 
-- if a dedicated GPU node pool is provisioned, only inference-serving workloads that execute model inference may tolerate GPU taints or select GPU nodes
+- the baseline deployment path for internal inference is `regular` and does not require GPU capacity
+- `regular` internal inference workloads must run in the governed regular inference namespace on non-GPU nodes
+- if a dedicated GPU node pool is provisioned, only inference-serving workloads promoted as `gpu_backed` may tolerate GPU taints or select GPU nodes
+- `gpu_backed` internal inference workloads must run in the governed GPU inference namespace
 - control-plane API, routing API, snapshot builder, projection workers, feedback/replay services, training job orchestration, registry inspection APIs, online feature services, Redis, PostgreSQL, Kafka, and other supporting infrastructure must schedule onto the default non-GPU node pool
 - the existence of a GPU node pool must not broaden placement for general compute workloads in this repo
 
@@ -618,13 +706,26 @@
 ### Runtime Model For Absorbed ML Workflow
 
 - the current implementation is Python 3.11 oriented
-- training and inference use repository-local code rather than heavyweight external ML frameworks
+- training and inference continue to use repository-local scoring and artifact logic, while Kubeflow is the governed workflow layer for pipelines, training orchestration, ML experiment tracking, and deployment workflows
 - training can run in a container via `config/ml-training/Dockerfile` and `train-models.sh`
+- Kubeflow is the explicit orchestration and tracking framework for:
+  - ML pipelines
+  - model training
+  - ML experiment tracking
+  - model deployment workflows
+- GrowthBook remains the explicit governance framework for:
+  - feature flags
+  - A/B testing
+  - experiment analysis
+  - decision rollout control
 - all workloads are expected to run as Kubernetes workloads in DigitalOcean
 - object storage is MinIO-compatible and addressed through S3 APIs
 - registry I/O is performed through Trino
 - PostgreSQL stores authoritative internal inference deployment desired state, observed state, reconciliation progress, and readiness-gated serving controls
 - Redis is required for the customer hot-feature path
+- Keycloak is required for identity and access control in the baseline deployment
+- Keycloak bootstrap and ongoing baseline realm or client population must be driven through GitOps-managed manifests until a dedicated security platform replaces that bridge
+- Keycloak passwords and client secrets must be generated as high-entropy random credentials and delivered only through encrypted GitOps secret inputs
 
 ### Tests
 

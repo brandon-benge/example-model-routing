@@ -13,8 +13,18 @@
 
 - Required guarantee:
   - internal serving desired state and observed deployment state are durably persisted in PostgreSQL and reconciled into explicit workload state before routing treats the target as ready
+  - serving class is fixed by promotion or desired state and deterministically resolves to the governed inference namespace used for deployment
 - Failure tolerance:
   - deployment reconciliation failure leaves the target unroutable or fallback-only according to policy
+  - missing or contradictory serving-class-to-namespace resolution fails closed before deployment activation
+
+### Workflow: Hosted MCP Deployment Reconciliation
+
+- Required guarantee:
+  - hosted MCP desired state and observed deployment state are durably persisted in PostgreSQL and reconciled into explicit workload state before execution treats the capability as callable
+  - the published endpoint and auth configuration used for invocation bind to the exact active MCP server binding and server version
+- Failure tolerance:
+  - hosted MCP reconciliation failure leaves the capability uncallable and requires fail-closed execution behavior
 
 ### Workflow: Configuration Publish
 
@@ -85,8 +95,9 @@
 
 - Required guarantee:
   - lifecycle transitions for repo-owned models are append-only, explicit, and auditable
+  - internal production promotion records the chosen serving class and resolved inference namespace as part of the bound release context
 - Failure tolerance:
-  - promotion, deprecation, or retirement must fail closed if the target version identity or required metadata cannot be proven
+  - promotion, deprecation, or retirement must fail closed if the target version identity, serving class, namespace resolution, or required metadata cannot be proven
   - validation failure blocks the normal candidate-first path but does not remove the availability of an explicit override promotion workflow when the caller supplies required approval metadata
 
 ### Workflow: Customer Hot Feature Serving
@@ -110,6 +121,8 @@
 
 - strong reads are required for authoritative decision lookup, published routing-policy lookup, captured GrowthBook experiment reference lookup, and decision replay
 - strong reads are required from PostgreSQL for internal inference deployment readiness, reconciliation status, and desired-state lookup used in routing eligibility
+- strong reads are required from PostgreSQL for serving class and namespace resolution used by internal promotion and routing eligibility
+- strong reads are required from PostgreSQL for hosted MCP deployment readiness, endpoint resolution, and auth-bound binding lookup used in governed capability invocation
 - stale-tolerant reads are allowed for regional snapshot caches, derived projections, and Redis hot features
 - repo-owned model inference reads are manifest-driven and strong relative to the manifest URI returned by the registry query
 
@@ -120,6 +133,7 @@
 - experiment exposures are ordered by exposure timestamp and bind to immutable GrowthBook experiment reference identifiers
 - sticky user assignment for a given effective bucket version is stable under repeated evaluation
 - internal deployment readiness must be established before the corresponding target is treated as eligible for routing
+- hosted MCP deployment readiness must be established before the corresponding capability is treated as callable
 - training rows are ordered chronologically before splitting
 - active-model selection for absorbed ML models is ordered only by `trained_at DESC`
 - customer hot-feature windows are ordered by retained event timestamps in keyed state
@@ -133,6 +147,8 @@
 - concurrent replay requests are allowed and must remain distinct by replay identifier
 - concurrent lifecycle transitions must resolve by explicit append-only state transitions rather than in-place overwrites
 - concurrent deployment updates for the same internal target must converge on one latest desired state for that target and model version
+- concurrent promotion attempts for the same internal model version must not produce conflicting serving-class or namespace bindings for the same production context
+- concurrent hosted MCP deployment updates for the same binding must converge on one latest desired state for that binding and server version
 
 ## Explicit Non-Guarantees
 

@@ -151,6 +151,7 @@
   - `feature_group`: string
   - `model_version`: string
   - `manifest_uri`: string
+  - `serving_class`: enum `regular` | `gpu_backed`
   - `execution_class`: enum `cpu` | `gpu`
   - `namespace`: string
   - `service_name`: string
@@ -165,6 +166,9 @@
   - `metadata`: object
 - Validation rules:
   - internal deployments must reference a valid `target_id` and `manifest_uri`
+  - `serving_class` is required and must deterministically map to exactly one governed inference namespace
+  - `serving_class=regular` requires a non-GPU execution class and the governed regular inference namespace
+  - `serving_class=gpu_backed` requires the governed GPU inference namespace
   - `execution_class=gpu` is permitted only for inference-serving workloads
   - a deployment may not be considered ready unless `ready_replicas >= 1`
 
@@ -188,6 +192,8 @@
   - `metadata`: object
 - Validation rules:
   - `node_pool_name` must identify a DigitalOcean node pool available to the target environment
+  - `execution_class=cpu` compute pools back the governed regular inference namespace only
+  - `execution_class=gpu` compute pools back the governed GPU inference namespace only
   - `execution_class=gpu` must not be assigned to non-serving control-plane workloads
 
 ### Entity: `PromptVersion`
@@ -238,12 +244,53 @@
   - `server_version`: string
   - `tenant_scope`: string or `global`
   - `capability_schema_ref`: string
+  - `hosting_mode`: enum `external_reference` | `internal_hosted`
   - `enabled`: boolean
   - `endpoint_reference`: string
+  - `deployment_id`: string | null
   - `policy_reference`: string
   - `created_at`: timestamp
   - `updated_at`: timestamp
   - `metadata`: object
+- Validation rules:
+  - `hosting_mode=external_reference` requires a stable external `endpoint_reference`
+  - `hosting_mode=internal_hosted` requires either a bound `deployment_id` or an explicit desired deployment declaration before activation
+  - an enabled internally hosted binding must not point at an endpoint outside the authoritative hosted deployment state
+
+### Entity: `MCPServerDeployment`
+
+- Purpose: explicit desired and observed state for one internally hosted MCP service workload
+- Source: control-plane deployment reconciler
+- Authoritative store: PostgreSQL
+- Mutability: desired state mutable, observed state updated by reconciliation
+- Primary key:
+  - `deployment_id`
+- Natural key:
+  - `mcp_binding_id + server_version + environment`
+- Schema:
+  - `deployment_id`: string
+  - `mcp_binding_id`: string
+  - `server_name`: string
+  - `server_version`: string
+  - `namespace`: string
+  - `service_name`: string
+  - `endpoint_reference`: string
+  - `auth_mode`: string
+  - `service_identity_ref`: string | null
+  - `desired_replicas`: integer
+  - `min_replicas`: integer
+  - `max_replicas`: integer | null
+  - `state`: enum `pending` | `deploying` | `ready` | `degraded` | `retiring` | `retired` | `failed`
+  - `ready_replicas`: integer
+  - `created_by`: string
+  - `created_at`: timestamp
+  - `updated_at`: timestamp
+  - `metadata`: object
+- Validation rules:
+  - hosted MCP deployments must reference a valid `mcp_binding_id`
+  - `endpoint_reference` must identify the reconciled service endpoint published by the hosted workload
+  - a deployment may not be considered ready unless `ready_replicas >= 1`
+  - a deployment may not be considered callable unless required auth configuration is present
 
 ### Entity: `Snapshot`
 
@@ -558,6 +605,8 @@
   - `feature_group`: string
   - `model_version`: string
   - `manifest_uri`: string
+  - `serving_class`: enum `regular` | `gpu_backed` | null
+  - `resolved_namespace`: string | null
   - `from_state`: string | null
   - `to_state`: enum
     - `candidate`
@@ -576,6 +625,7 @@
   - a model version may not transition out of `retired`
   - a `production` transition must identify either the replaced production version or explicitly state none exists
   - `manifest_uri` must match the registered version being transitioned
+  - an internal `production` transition must record `serving_class` and `resolved_namespace`
 
 ### Entity: `CustomerOnlineFeatureRecord`
 
@@ -683,7 +733,7 @@
 
 ## Key Relationships
 
-- `AuthoritativeDecisionRecord -> ExperimentVersion`: many-to-one
+- `AuthoritativeDecisionRecord -> ExperimentReference`: many-to-one through captured experiment identity
 - `AuthoritativeDecisionRecord -> RoutingPolicyVersion`: many-to-one
 - `AuthoritativeDecisionRecord -> Snapshot`: many-to-one
 - `AuthoritativeDecisionRecord -> InternalInferenceDeployment`: optional many-to-one when the selected target is internal
